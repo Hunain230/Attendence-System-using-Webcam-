@@ -1,122 +1,107 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import React, { useState, useEffect } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { TopBar } from './components/TopBar';
+import { DashboardPage } from './pages/DashboardPage';
+import { LiveRecognitionPage } from './pages/LiveRecognitionPage';
+import { EmployeesPage } from './pages/EmployeesPage';
+import { EnrollmentPage } from './pages/EnrollmentPage';
+import { AttendancePage } from './pages/AttendancePage';
+import { systemApi } from './api/system';
+import { recognitionApi } from './api/recognition';
+import './App.css';
 
-function App() {
-  const [count, setCount] = useState(0)
+export function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [engineRunning, setEngineRunning] = useState(false);
+  const [currentFps, setCurrentFps] = useState(0);
+  const [preselectedEmployee, setPreselectedEmployee] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Poll system health and recognition engine status
+  const checkStatus = async () => {
+    try {
+      await systemApi.health();
+      setBackendOnline(true);
+    } catch {
+      setBackendOnline(false);
+    }
+
+    try {
+      const eng = await recognitionApi.getStatus();
+      setEngineRunning(Boolean(eng.running));
+      setCurrentFps(eng.current_fps || 0);
+    } catch {
+      setEngineRunning(false);
+    }
+  };
+
+  useEffect(() => {
+    checkStatus();
+    const interval = setInterval(checkStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await checkStatus();
+    setRefreshKey((k) => k + 1);
+    setTimeout(() => setIsRefreshing(false), 500);
+  };
+
+  const handleNavigateToEnrollment = (employee) => {
+    setPreselectedEmployee(employee);
+    setActiveTab('enrollment');
+  };
+
+  const PAGE_TITLES = {
+    dashboard: { title: 'Operational Dashboard', subtitle: 'Face recognition attendance overview' },
+    recognition: { title: 'Live Recognition', subtitle: 'Annotated 720p webcam feed & engine controls' },
+    employees: { title: 'Employee Directory', subtitle: 'Manage registered employees & vector mappings' },
+    enrollment: { title: 'Guided Face Enrollment', subtitle: 'Multi-pose variation capture & quality validation' },
+    attendance: { title: 'Attendance Logs', subtitle: 'Daily check-in logs & explicit check-out records' },
+  };
+
+  const currentMeta = PAGE_TITLES[activeTab] || { title: 'Attendance System', subtitle: '' };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app-shell">
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={(tab) => {
+          if (tab !== 'enrollment') setPreselectedEmployee(null);
+          setActiveTab(tab);
+        }}
+        backendOnline={backendOnline}
+        engineRunning={engineRunning}
+      />
 
-      <div className="ticks"></div>
+      <div className="app-main-layout">
+        <TopBar
+          title={currentMeta.title}
+          subtitle={currentMeta.subtitle}
+          backendOnline={backendOnline}
+          engineRunning={engineRunning}
+          currentFps={currentFps}
+          onRefresh={handleRefresh}
+          isRefreshing={isRefreshing}
+        />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+        <main className="app-content-area" key={refreshKey}>
+          {activeTab === 'dashboard' && <DashboardPage onNavigate={setActiveTab} />}
+          {activeTab === 'recognition' && <LiveRecognitionPage />}
+          {activeTab === 'employees' && (
+            <EmployeesPage onNavigateToEnrollment={handleNavigateToEnrollment} />
+          )}
+          {activeTab === 'enrollment' && (
+            <EnrollmentPage preselectedEmployee={preselectedEmployee} />
+          )}
+          {activeTab === 'attendance' && <AttendancePage />}
+        </main>
+      </div>
+    </div>
+  );
 }
 
-export default App
+export default App;
