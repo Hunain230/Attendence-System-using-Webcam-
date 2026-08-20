@@ -1,0 +1,31 @@
+# ──────────────────────────────────────────────────────
+# Attendance System — Python Dependencies
+# ──────────────────────────────────────────────────────
+# Install: pip install -r requirements.txt
+# Python:  3.10 or 3.11 recommended
+# ──────────────────────────────────────────────────────
+
+# ── Computer Vision ──────────────────────────────────
+opencv-python>=4.8.0
+insightface>=0.7.3
+onnxruntime>=1.16.0
+numpy>=1.24.0,<2.0.0
+
+# ── Vector Search ────────────────────────────────────
+faiss-cpu>=1.7.4
+
+# ── Database ─────────────────────────────────────────
+sqlalchemy>=2.0.0
+
+# ── Backend API ──────────────────────────────────────
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# ── Utilities ────────────────────────────────────────
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# ── Testing ──────────────────────────────────────────
+pytest>=7.4.0
+httpx>=0.25.0
