@@ -375,7 +375,7 @@ $env:CAMERA_INDEX = "1"
 | 7 | Employee enrollment (guided multi-pose variation) | ✅ |
 | 8 | Recognition engine + IoU tracker + skip rule optimization | ✅ |
 | 9 | Attendance service (first check-in + explicit checkout + debounced cache) | ✅ |
-| 10 | FastAPI REST API | ⬜ |
+| 10 | FastAPI REST API (CRUD routers + Pydantic + MJPEG stream) | ✅ |
 | 11 | React dashboard | ⬜ |
 
 ---
