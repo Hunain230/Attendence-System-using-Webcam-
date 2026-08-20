@@ -372,7 +372,7 @@ $env:CAMERA_INDEX = "1"
 | 4 | Face embedding (ArcFace, 512-D) | ✅ |
 | 5 | SQLite schema + ORM (SQLAlchemy) | ✅ |
 | 6 | FAISS vector index + ID mapping (`IndexFlatIP`) | ✅ |
-| 7 | Employee enrollment (guided variation) | ⬜ |
+| 7 | Employee enrollment (guided multi-pose variation) | ✅ |
 | 8 | Recognition engine + tracking + temporal confirmation | ⬜ |
 | 9 | Attendance service (check-in + explicit checkout) | ⬜ |
 | 10 | FastAPI REST API | ⬜ |
