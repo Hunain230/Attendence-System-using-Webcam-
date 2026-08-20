@@ -73,9 +73,9 @@ def deactivate_employee_route(employee_id: int, db: Session = Depends(get_db)):
     success = EmployeeRepository.deactivate(db, employee_id)
     if success:
         EmbeddingRepository.delete_by_employee(db, employee_id)
-        # Matcher vector removal
-        matcher = FaceMatcher()
-        matcher.remove_employee(employee_id)
+        # Matcher vector removal from global engine
+        from app.api.recognition import global_engine
+        global_engine.matcher.remove_employee(employee_id)
         return {"success": True, "message": f"Employee #{employee_id} deactivated"}
 
     raise HTTPException(

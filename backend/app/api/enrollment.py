@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.database.database import get_db
 from app.recognition.enrollment import EnrollmentService, EnrollmentSampleResult
+from app.api.recognition import global_engine
 from app.schemas.enrollment import (
     EnrollmentStartRequest,
     EnrollmentStartResponse,
@@ -22,8 +23,8 @@ from app.schemas.enrollment import (
 
 router = APIRouter(prefix="/enrollment", tags=["enrollment"])
 
-# Shared enrollment service instance
-enrollment_service = EnrollmentService()
+# Shared enrollment service instance using the global engine matcher
+enrollment_service = EnrollmentService(matcher=global_engine.matcher)
 
 
 @router.post("/start", response_model=EnrollmentStartResponse, status_code=status.HTTP_201_CREATED)

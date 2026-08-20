@@ -155,6 +155,10 @@ class FaceMatcher:
         faiss.write_index(self.index, str(self.index_path))
         np.save(str(self.id_map_path), np.array(self.id_map, dtype=np.int64))
 
+    def reload(self) -> bool:
+        """Reloads the FAISS index and ID map from disk."""
+        return self._load_if_exists()
+
     def _load_if_exists(self) -> bool:
         """Loads index and ID map from disk if both files exist."""
         if self.index_path.exists() and self.id_map_path.exists():

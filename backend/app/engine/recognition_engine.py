@@ -79,6 +79,7 @@ class RecognitionEngine:
         """Starts the background recognition thread."""
         if self._running:
             return
+        self.matcher.reload()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
