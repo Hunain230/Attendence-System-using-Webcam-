@@ -40,7 +40,7 @@ def valid_face_sample():
         [
             [40.0, 45.0],  # left eye
             [80.0, 45.0],  # right eye
-            [60.0, 69.0],  # nose (0.6 relative vertical offset, centered horizontally)
+            [60.0, 55.7],  # nose tip (eye_width=40, vertical dist=10.7 -> offset=0.2675 -> ~15° -> pitch ~0°)
             [45.0, 95.0],  # left mouth
             [75.0, 95.0],  # right mouth
         ],
