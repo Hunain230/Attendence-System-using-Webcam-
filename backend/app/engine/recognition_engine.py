@@ -24,6 +24,7 @@ from app.recognition.quality import QualityGate, QualityResult
 from app.recognition.embedder import FaceEmbedder
 from app.recognition.matcher import FaceMatcher
 from app.recognition.tracker import FaceTracker, Track
+from app.attendance.service import AttendanceService
 from app.database.database import SessionLocal
 from app.database.repository import EmployeeRepository
 
@@ -50,12 +51,14 @@ class RecognitionEngine:
         matcher: Optional[FaceMatcher] = None,
         quality_gate: Optional[QualityGate] = None,
         tracker: Optional[FaceTracker] = None,
+        attendance_service: Optional[AttendanceService] = None,
     ):
         self.detector = detector or FaceDetector()
         self.embedder = embedder or FaceEmbedder()
         self.matcher = matcher or FaceMatcher()
         self.quality_gate = quality_gate or QualityGate()
         self.tracker = tracker or FaceTracker()
+        self.attendance_service = attendance_service or AttendanceService()
 
         self._running: bool = False
         self._thread: Optional[threading.Thread] = None
@@ -178,8 +181,13 @@ class RecognitionEngine:
                 employee = EmployeeRepository.get_by_id(db, employee_id)
                 emp_name = employee.name if employee else f"Employee #{employee_id}"
 
-                # Step 3e: Temporal Confirmation
+                # Step 3e: Temporal Confirmation & Attendance Check-In
                 track.add_recognition(employee_id, confidence, name=emp_name)
+
+                if track.is_confirmed:
+                    self.attendance_service.mark_if_needed(
+                        employee_id=employee_id, confidence=confidence, db=db
+                    )
 
         finally:
             if created_session and db is not None:

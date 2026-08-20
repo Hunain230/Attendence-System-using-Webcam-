@@ -374,7 +374,7 @@ $env:CAMERA_INDEX = "1"
 | 6 | FAISS vector index + ID mapping (`IndexFlatIP`) | ✅ |
 | 7 | Employee enrollment (guided multi-pose variation) | ✅ |
 | 8 | Recognition engine + IoU tracker + skip rule optimization | ✅ |
-| 9 | Attendance service (check-in + explicit checkout) | ⬜ |
+| 9 | Attendance service (first check-in + explicit checkout + debounced cache) | ✅ |
 | 10 | FastAPI REST API | ⬜ |
 | 11 | React dashboard | ⬜ |
 
