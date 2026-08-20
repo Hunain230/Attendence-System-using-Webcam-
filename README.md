@@ -368,7 +368,7 @@ $env:CAMERA_INDEX = "1"
 |:-----:|:------------|:------:|
 | 1 | Camera validation (720p @ 30 FPS) | ✅ |
 | 2 | Face detection (SCRFD via `buffalo_s`) | ✅ |
-| 3 | Face quality gate | ✅ |
+| 3 | Face quality gate (Size, Brightness, Blur, Pose) | ✅ |
 | 4 | Face embedding (ArcFace, 512-D) | ✅ |
 | 5 | SQLite schema + ORM (SQLAlchemy) | ✅ |
 | 6 | FAISS index + ID mapping | ⬜ |

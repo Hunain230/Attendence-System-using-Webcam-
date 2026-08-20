@@ -181,7 +181,7 @@ class QualityGate:
         )
 
     def _estimate_pose(self, landmarks: np.ndarray) -> Tuple[float, float]:
-        """Estimates approximate yaw and pitch angles in degrees from 5-point facial landmarks.
+        """Estimate yaw and pitch from 5-point landmarks as per Implementation Plan v3.0.
 
         Landmarks indexing:
           0: left eye
@@ -197,16 +197,13 @@ class QualityGate:
         eye_center = (left_eye + right_eye) / 2.0
         eye_width = float(np.linalg.norm(right_eye - left_eye))
 
-        if eye_width < 1e-6:
-            return 0.0, 0.0
+        # Yaw: horizontal offset of nose from eye center
+        nose_offset_x = (nose[0] - eye_center[0]) / (eye_width + 1e-6)
+        yaw = float(np.degrees(np.arctan(nose_offset_x)))
 
-        # Yaw: horizontal offset of nose relative to eye midpoint
-        nose_offset_x = (nose[0] - eye_center[0]) / eye_width
-        yaw = float(np.degrees(np.arctan(nose_offset_x * 2.0)))
-
-        # Pitch: vertical offset of nose relative to eye midpoint
-        nose_offset_y = (nose[1] - eye_center[1]) / eye_width
-        pitch = float(np.degrees(np.arctan((nose_offset_y - 0.6) * 2.0)))
+        # Pitch: vertical offset of nose below eye center
+        nose_offset_y = (nose[1] - eye_center[1]) / (eye_width + 1e-6)
+        pitch = float(np.degrees(np.arctan(nose_offset_y))) - 15.0  # nose is normally below eyes
 
         return yaw, pitch
 
@@ -216,11 +213,11 @@ class QualityGate:
         sharpness: float,
         yaw: float,
         pitch: float,
-        width: float,
-        height: float,
+        w: float,
+        h: float,
     ) -> float:
-        """Computes a normalized composite quality score 0.0–1.0."""
-        size_score = min(1.0, float(width * height) / (200.0 * 200.0))
+        """Composite quality score 0.0–1.0 as per Implementation Plan v3.0."""
+        size_score = min(1.0, float(w * h) / (200.0 * 200.0))
         blur_score = min(1.0, sharpness / 200.0)
         pose_score = max(0.0, 1.0 - (abs(yaw) + abs(pitch)) / 70.0)
         bright_score = min(1.0, brightness / 150.0)
