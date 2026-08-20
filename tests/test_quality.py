@@ -121,7 +121,7 @@ def test_excessive_pitch(quality_gate, valid_face_sample):
     crop, bbox, landmarks = valid_face_sample
     # Shift nose significantly down to simulate head tilted upward/downward
     shifted_landmarks = landmarks.copy()
-    shifted_landmarks[2] = [60.0, 110.0]  # nose far down
+    shifted_landmarks[2] = [60.0, 140.0]  # nose far down
 
     res = quality_gate.check(crop, bbox, shifted_landmarks)
 

@@ -371,7 +371,7 @@ $env:CAMERA_INDEX = "1"
 | 3 | Face quality gate (Size, Brightness, Blur, Pose) | ✅ |
 | 4 | Face embedding (ArcFace, 512-D) | ✅ |
 | 5 | SQLite schema + ORM (SQLAlchemy) | ✅ |
-| 6 | FAISS index + ID mapping | ⬜ |
+| 6 | FAISS vector index + ID mapping (`IndexFlatIP`) | ✅ |
 | 7 | Employee enrollment (guided variation) | ⬜ |
 | 8 | Recognition engine + tracking + temporal confirmation | ⬜ |
 | 9 | Attendance service (check-in + explicit checkout) | ⬜ |
