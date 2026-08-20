@@ -7,7 +7,7 @@ CAMERA_INDEX = 0
 TEST_DURATION = 30
 
 
-def test_camera(width, height):
+def run_camera_benchmark(width, height):
     print("\n" + "=" * 60)
     print(f"Testing requested resolution: {width}x{height}")
     print("=" * 60)
@@ -106,7 +106,7 @@ def test_camera(width, height):
 if __name__ == "__main__":
 
     # Test 720p
-    test_camera(1280, 720)
+    run_camera_benchmark(1280, 720)
 
     # Test 1080p
-    test_camera(1920, 1080)
+    run_camera_benchmark(1920, 1080)

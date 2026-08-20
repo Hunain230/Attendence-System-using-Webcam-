@@ -2,7 +2,7 @@ import cv2
 import time
 import statistics
 
-def test(width, height, duration=20):
+def run_raw_benchmark(width, height, duration=20):
     print(f"\nTesting {width}x{height}...")
 
     cap = cv2.VideoCapture(0)
@@ -56,5 +56,6 @@ def test(width, height, duration=20):
     print(f"Jitter           : {jitter:.2f} ms")
 
 
-test(1280, 720)
-test(1920, 1080)
+if __name__ == "__main__":
+    run_raw_benchmark(1280, 720)
+    run_raw_benchmark(1920, 1080)
