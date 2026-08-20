@@ -29,13 +29,13 @@
 
 ## ✨ Features
 
-- 🔍 **Real-time face detection** — SCRFD via InsightFace, runs periodically for efficiency
-- 🧠 **Face recognition** — ArcFace 512-D embeddings with FAISS vector search
+- 🔍 **Real-time face detection** — SCRFD ~22 ms/frame → ~25–30 detection FPS
+- 🧠 **Face recognition** — ArcFace produces ONE 512-D embedding per face (~8 ms), FAISS searches ~5000 stored embeddings (< 1 ms)
 - 📹 **Live MJPEG stream** — annotated camera feed directly in the browser
 - 👤 **Guided enrollment** — captures multiple poses (straight, left, right, up, down, smile)
 - ✅ **Smart attendance** — auto check-in on first recognition; check-out is explicit only
 - 🔒 **Fully offline** — no cloud dependencies, all data stays on your machine
-- ⚡ **Optimized pipeline** — detection (periodic) → tracking (every frame) → recognition (new tracks only)
+- ⚡ **Optimized pipeline** — SCRFD detection → IoU tracking (every frame) → ArcFace only for new faces
 - 🎛️ **Fully configurable** — model, thresholds, camera, quality gates — all in one `config.py`
 
 ---
@@ -43,53 +43,65 @@
 ## 🏗 Architecture
 
 ```text
-                    ┌──────────────┐
-                    │ Surface Cam  │
-                    └──────┬───────┘
-                           ↓
-                    ┌──────────────┐
-                    │   OpenCV     │
-                    └──────┬───────┘
-                           ↓
-                    ┌──────────────┐
-                    │    SCRFD     │
-                    │  Detection   │
-                    │  (periodic)  │
-                    └──────┬───────┘
-                           ↓
-                    ┌──────────────┐
-                    │ IoU Tracker  │
-                    │(every frame) │
-                    └──────┬───────┘
-                           ↓
-                     New / uncertain?
-                       ↙         ↘
-                     NO          YES
-                     ↓            ↓
-                  Track      Quality Gate
-                  only            ↓
-                             ArcFace
-                                  ↓
-                            512-D Vector
-                                  ↓
-                              FAISS
-                                  ↓
-                           Employee ID
-                                  ↓
-                         Temporal Confirm
-                                  ↓
-                         Attendance Service
-                                  ↓
-                              SQLite
-                                  ↓
-                    ┌─────────────┴─────────────┐
-                    ↓                           ↓
-                 FastAPI                    MJPEG
-                    ↓                           ↓
-                 React UI  ←────────────────────┘
+       Camera 720p / 30 FPS
+               ↓
+        ┌──────────────┐
+        │    SCRFD     │  ~22 ms / frame
+        │  Detection   │  → ~25–30 detection FPS
+        └──────┬───────┘
+               ↓
+        ┌──────────────┐
+        │ IoU Tracker  │  every frame (< 1 ms)
+        └──────┬───────┘
+               ↓
+        ┌──────┴────────┐
+        │               │
+   Known face      New face
+        │               │
+        │          Quality Gate
+        │               ↓
+        │          Align face
+        │               ↓
+        │           ArcFace        ~8 ms
+        │          (ONE embedding)
+        │               ↓
+        └───────┬───────┘
+                ↓
+          512-D embedding
+                ↓
+         ┌──────────────┐
+         │    FAISS     │  ~5000 × 512 stored embeddings
+         │  IndexFlatIP │  vector search (< 1 ms)
+         └──────┬───────┘
+                ↓
+          Nearest person
+                ↓
+        Similarity threshold
+                ↓
+        Temporal confirmation
+                ↓
+         Attendance Service
+                ↓
+             SQLite
+                ↓
+     ┌──────────┴──────────┐
+     ↓                     ↓
+  FastAPI               MJPEG
+     ↓                     ↓
+  React UI ←───────────────┘
 ```
 
-> **Recognition Engine** runs as a dedicated background thread. FastAPI controls it (start/stop/status) but never runs CV inside HTTP handlers.
+> **Recognition Engine** runs as a dedicated background thread. FastAPI controls it (start/stop/status) but never runs CV inside HTTP handlers. ArcFace produces ONE embedding per face — we do NOT run ArcFace against 5000 people. FAISS handles the vector search in < 1 ms.
+
+### ⚡ Performance Targets
+
+| Stage | Time | Frequency |
+|:------|:-----|:----------|
+| SCRFD detection | ~22 ms | Every frame → ~25–30 FPS |
+| IoU tracking | < 1 ms | Every frame |
+| ArcFace embedding | ~8 ms | New/uncertain faces only |
+| FAISS search (5000 embeddings) | < 1 ms | Per new embedding |
+| End-to-end recognition | ~0.2–1 s | Per new person |
 
 ---
 
