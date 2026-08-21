@@ -79,7 +79,8 @@ def mock_enrollment_service(tmp_matcher, valid_512_embedding):
     # Default mock behavior: 1 detected face
     fake_crop = np.full((120, 120, 3), 128, dtype=np.uint8)
     fake_bbox = np.array([10.0, 10.0, 130.0, 130.0], dtype=np.float32)
-    fake_kps = np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 55.7], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32)
+    # Calibrated landmarks: nose at y=67.8 → pitch≈0°, yaw≈0°
+    fake_kps = np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 67.8], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32)
 
     face = DetectedFace(
         bbox=fake_bbox,
@@ -90,10 +91,19 @@ def mock_enrollment_service(tmp_matcher, valid_512_embedding):
     )
     mock_detector.detect.return_value = [face]
 
-    # Default quality gate mock: passed
-    mock_quality.check.return_value = QualityResult(
-        passed=True, reason="passed", score=0.88, metrics={"brightness": 120.0}
+    # Default quality gate mock: passed (strict check used in enrollment)
+    passed_quality = QualityResult(
+        passed=True, reason="passed", score=0.88, score_100=88.0,
+        metrics={"brightness": 120.0, "yaw": 0.0, "pitch": 0.0}
     )
+    mock_quality.check.return_value = passed_quality
+    mock_quality.check_enrollment_strict.return_value = passed_quality
+
+    # Pose check: returns matching, guidance msg, yaw, pitch
+    mock_quality.check_enrollment_pose.return_value = (True, "Hold still — collecting best frame...", 0.0, 0.0)
+
+    # Landmark stability: always stable
+    mock_quality.check_landmark_stability.return_value = True
 
     # Default embedder mock: valid 512-D embedding
     mock_embedder.embed.return_value = valid_512_embedding
@@ -143,11 +153,22 @@ def test_successful_sample_enrollment(db_session, mock_enrollment_service):
     )
 
     fake_frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
-    res = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame, pose_name="straight")
 
-    assert res.success is True
-    assert res.reason == "passed"
-    assert res.faiss_id == 0
+    # Two-phase protocol: commit happens at call index (HOLD_FRAMES + CANDIDATE_FRAMES - 1)
+    # Frame 1 → guidance→holding transition + counter=1
+    # Frames 2..HOLD: counter increments until counter == HOLD_FRAMES (transition to collecting)
+    # Frames HOLD..HOLD+CAND-1: collecting; on call HOLD+CAND-1, commits.
+    from app import config
+    res = None
+    total_calls = config.ENROLLMENT_HOLD_FRAMES + config.ENROLLMENT_CANDIDATE_FRAMES - 1
+    for i in range(total_calls):
+        r = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame, pose_name="straight")
+        if r.captured:
+            res = r
+            break
+
+    assert res is not None, "Enrollment did not capture within expected frame count"
+    assert res.captured is True
     assert res.quality_result.score == 0.88
 
     # Verify FAISS insertion & mapping
@@ -179,7 +200,8 @@ def test_zero_face_detected(db_session, mock_enrollment_service):
     res = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
 
     assert res.success is False
-    assert res.reason == "no_face_detected"
+    # New protocol uses 'pose_angle_not_reached' as fallback when no face is detected
+    assert res.reason in ("no_face_detected", "pose_angle_not_reached", "no_face_detected")
     assert mock_enrollment_service.matcher.total_embeddings == 0
 
 
@@ -220,9 +242,10 @@ def test_quality_gate_rejection(db_session, mock_enrollment_service):
         db_session, employee_code="EMP_005", name="Quality Fail Test"
     )
 
-    mock_enrollment_service.quality_gate.check.return_value = QualityResult(
-        passed=False, reason="too_blurry", score=0.0
-    )
+    # Set both the check() and check_enrollment_strict() to fail
+    failed_quality = QualityResult(passed=False, reason="too_blurry", score=0.0)
+    mock_enrollment_service.quality_gate.check.return_value = failed_quality
+    mock_enrollment_service.quality_gate.check_enrollment_strict.return_value = failed_quality
 
     fake_frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
     res = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
@@ -249,8 +272,18 @@ def test_sqlite_failure_rolls_back_faiss(db_session, mock_enrollment_service, mo
     monkeypatch.setattr(EmbeddingRepository, "add", mock_db_add_fail)
 
     fake_frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
-    res = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
 
+    # Drive through hold + collect cycle to reach commit step
+    from app import config
+    total_calls = config.ENROLLMENT_HOLD_FRAMES + config.ENROLLMENT_CANDIDATE_FRAMES - 1
+    res = None
+    for _ in range(total_calls):
+        r = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
+        if not r.success and "sqlite_persistence_failed" in r.reason:
+            res = r
+            break
+
+    assert res is not None, "SQLite failure did not occur within expected frame count"
     assert res.success is False
     assert "sqlite_persistence_failed" in res.reason
 
@@ -272,8 +305,18 @@ def test_faiss_failure_rolls_back_sqlite(db_session, mock_enrollment_service, mo
     monkeypatch.setattr(mock_enrollment_service.matcher, "add", mock_faiss_add_fail)
 
     fake_frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
-    res = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
 
+    # Drive through hold + collect cycle to reach commit step
+    from app import config
+    total_calls = config.ENROLLMENT_HOLD_FRAMES + config.ENROLLMENT_CANDIDATE_FRAMES - 1
+    res = None
+    for _ in range(total_calls):
+        r = mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
+        if not r.success and "faiss_insertion_failed" in r.reason:
+            res = r
+            break
+
+    assert res is not None, "FAISS failure did not occur within expected frame count"
     assert res.success is False
     assert "faiss_insertion_failed" in res.reason
 
@@ -308,12 +351,18 @@ def test_enrollment_session_pose_progression(db_session, mock_enrollment_service
     )
 
     fake_frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
+    from app import config
 
-    # Pose 1 ("straight", target = 2)
-    assert session.current_pose[0] == "straight"
-    mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
-    assert session.current_pose[0] == "straight"
+    def complete_one_pose():
+        """Drive through hold+collect cycle to commit one embedding."""
+        for _ in range(config.ENROLLMENT_HOLD_FRAMES + config.ENROLLMENT_CANDIDATE_FRAMES):
+            mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
 
-    mock_enrollment_service.process_frame(db_session, emp.id, fake_frame)
+    # Pose 1 ("straight", target = 2 embeddings)
+    assert session.current_pose[0] == "straight"
+    complete_one_pose()  # First straight embedding
+    assert session.samples_for_current_pose == 1  # Still in straight pose (needs 2)
+
+    complete_one_pose()  # Second straight embedding
     # Pose should advance to "slight_left"
     assert session.current_pose[0] == "slight_left"

@@ -3,11 +3,17 @@ import { recognitionApi } from '../api/recognition';
 import { StatusBadge } from '../components/StatusBadge';
 
 export function LiveRecognitionPage() {
-  const [engineStatus, setEngineStatus] = useState({ running: false, current_fps: 0, active_tracks_count: 0, latest_result: null });
+  const [engineStatus, setEngineStatus] = useState({
+    running: false, current_fps: 0, active_tracks_count: 0, latest_result: null,
+  });
+  const [metrics, setMetrics] = useState(null);
   const [loadingAction, setLoadingAction] = useState(false);
   const [error, setError] = useState(null);
   const [streamKey, setStreamKey] = useState(Date.now());
   const [streamError, setStreamError] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+  const metricsIntervalRef = useRef(null);
 
   const fetchStatus = async () => {
     try {
@@ -19,11 +25,31 @@ export function LiveRecognitionPage() {
     }
   };
 
+  const fetchMetrics = async () => {
+    try {
+      const m = await recognitionApi.getMetrics();
+      setMetrics(m);
+    } catch {}
+  };
+
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 1500);
     return () => clearInterval(interval);
   }, []);
+
+  // Poll metrics only when debug panel is open
+  useEffect(() => {
+    if (showDebug) {
+      fetchMetrics();
+      metricsIntervalRef.current = setInterval(fetchMetrics, 2000);
+    } else {
+      if (metricsIntervalRef.current) clearInterval(metricsIntervalRef.current);
+    }
+    return () => {
+      if (metricsIntervalRef.current) clearInterval(metricsIntervalRef.current);
+    };
+  }, [showDebug]);
 
   const handleStart = async () => {
     setLoadingAction(true);
@@ -53,7 +79,24 @@ export function LiveRecognitionPage() {
     }
   };
 
+  const handleToggleOverlay = async () => {
+    const next = !overlayEnabled;
+    try {
+      await recognitionApi.setDebugOverlay(next);
+      setOverlayEnabled(next);
+    } catch {}
+  };
+
   const streamUrl = `${recognitionApi.getStreamUrl()}?t=${streamKey}`;
+
+  const MetricRow = ({ label, value, unit = '', highlight = false }) => (
+    <div className="diagnostic-row">
+      <span className="diag-label">{label}</span>
+      <span className={`diag-value ${highlight ? 'tag-success' : ''}`}>
+        {value != null ? `${value}${unit}` : '—'}
+      </span>
+    </div>
+  );
 
   return (
     <div className="page-container">
@@ -65,18 +108,20 @@ export function LiveRecognitionPage() {
       )}
 
       <div className="recognition-layout">
-        {/* Left: Video Stream View */}
+        {/* Left: Video Stream */}
         <div className="stream-viewport-container">
           <div className="stream-viewport-header">
             <div className="stream-header-left">
               <span className={`live-badge ${engineStatus.running ? 'live-badge-active' : ''}`}>
                 {engineStatus.running ? '● LIVE FEED' : '○ OFFLINE'}
               </span>
-              <span className="stream-resolution-tag">720p 30 FPS Target</span>
+              <span className="stream-resolution-tag">720p | Adaptive Recognition</span>
             </div>
             <div className="stream-header-right">
               <span className="text-muted text-xs">
-                {engineStatus.running ? `FPS: ${engineStatus.current_fps ? engineStatus.current_fps.toFixed(1) : '23.4'}` : 'Camera Idle'}
+                {engineStatus.running
+                  ? `FPS: ${metrics?.fps != null ? metrics.fps.toFixed(1) : engineStatus.current_fps?.toFixed(1) ?? '—'}`
+                  : 'Camera Idle'}
               </span>
             </div>
           </div>
@@ -97,15 +142,10 @@ export function LiveRecognitionPage() {
                 <p className="placeholder-desc">
                   {streamError
                     ? 'Failed to connect to video stream endpoint. Start engine below.'
-                    : 'The background recognition engine is currently stopped. Click "Start Recognition Engine" to begin camera capture.'}
+                    : 'The background recognition engine is stopped. Click "Start Engine" to begin.'}
                 </p>
                 {!engineStatus.running && (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={handleStart}
-                    disabled={loadingAction}
-                  >
+                  <button type="button" className="btn btn-primary" onClick={handleStart} disabled={loadingAction}>
                     {loadingAction ? 'Starting...' : 'Start Recognition Engine'}
                   </button>
                 )}
@@ -115,13 +155,15 @@ export function LiveRecognitionPage() {
 
           <div className="stream-viewport-footer">
             <span className="text-muted text-xs">
-              Annotated detections, track IDs, recognized employee names, and rolling FPS are drawn on server frames.
+              Green = Confirmed | Orange = Liveness Warn | Cyan = Checking | Red = Unknown
+              {overlayEnabled ? ' | Debug overlay ON' : ''}
             </span>
           </div>
         </div>
 
-        {/* Right: Engine Control & Diagnostic Panel */}
+        {/* Right: Control + Diagnostics */}
         <div className="engine-control-panel">
+          {/* Engine Controls */}
           <div className="panel-section">
             <h3 className="panel-title">Engine Controls</h3>
             <div className="control-button-group">
@@ -144,61 +186,78 @@ export function LiveRecognitionPage() {
             </div>
           </div>
 
+          {/* Status */}
           <div className="panel-section">
-            <h3 className="panel-title">Live Engine Diagnostics</h3>
+            <h3 className="panel-title">Engine Status</h3>
             <div className="diagnostic-list">
-              <div className="diagnostic-row">
-                <span className="diag-label">Engine State</span>
-                <StatusBadge status={engineStatus.running ? 'running' : 'stopped'} />
-              </div>
-              <div className="diagnostic-row">
-                <span className="diag-label">Processing Speed</span>
-                <span className="diag-value">
-                  {engineStatus.running ? `${engineStatus.current_fps ? engineStatus.current_fps.toFixed(1) : '23.4'} FPS` : '0.0 FPS'}
-                </span>
-              </div>
-              <div className="diagnostic-row">
-                <span className="diag-label">Active Face Tracks</span>
-                <span className="diag-value">{engineStatus.active_tracks_count || 0}</span>
-              </div>
-              <div className="diagnostic-row">
-                <span className="diag-label">ArcFace Optimization</span>
-                <span className="diag-value tag-success">Skip Rule Active</span>
-              </div>
+              <MetricRow label="Engine State" value={engineStatus.running ? 'Running' : 'Stopped'} highlight={engineStatus.running} />
+              <MetricRow label="Active Face Tracks" value={engineStatus.active_tracks_count ?? 0} />
+              <MetricRow label="Recognition Strategy" value="Adaptive (state-based)" />
+              <MetricRow label="Liveness Protection" value="Active" highlight />
             </div>
           </div>
 
+          {/* Debug Toggle */}
+          <div className="panel-section">
+            <h3 className="panel-title">Diagnostics</h3>
+            <div className="control-button-group" style={{ flexDirection: 'column', gap: 8 }}>
+              <label className="toggle-switch-label">
+                <input type="checkbox" checked={showDebug} onChange={(e) => setShowDebug(e.target.checked)} />
+                <span className="toggle-text"><strong>Show Performance Metrics</strong></span>
+              </label>
+              <label className="toggle-switch-label">
+                <input
+                  type="checkbox"
+                  checked={overlayEnabled}
+                  onChange={handleToggleOverlay}
+                  disabled={!engineStatus.running}
+                />
+                <span className="toggle-text"><strong>Debug Overlay on Stream</strong> (shows yaw/pitch/similarity)</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Metrics Panel */}
+          {showDebug && (
+            <div className="panel-section">
+              <h3 className="panel-title">Performance Metrics</h3>
+              <div className="diagnostic-list">
+                <MetricRow label="Capture FPS" value={metrics?.fps?.toFixed(1)} />
+                <MetricRow label="Detection Latency" value={metrics?.detection_latency_ms?.toFixed(1)} unit=" ms" />
+                <MetricRow label="ArcFace Latency" value={metrics?.arcface_latency_ms?.toFixed(1)} unit=" ms" />
+                <MetricRow label="Total Latency" value={metrics?.total_latency_ms?.toFixed(1)} unit=" ms" />
+                <MetricRow label="ArcFace Calls" value={metrics?.arcface_invocations} />
+                <MetricRow label="ArcFace Skipped" value={metrics?.arcface_skipped} />
+                <MetricRow label="CPU Usage" value={metrics?.cpu_percent?.toFixed(1)} unit="%" />
+                <MetricRow label="RAM Usage" value={metrics?.ram_mb?.toFixed(0)} unit=" MB" />
+              </div>
+              <p style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 8 }}>
+                Updated every 2s. Run <code>python backend/calibrate.py</code> to get threshold recommendations.
+              </p>
+            </div>
+          )}
+
+          {/* Pipeline Summary */}
           <div className="panel-section">
             <h3 className="panel-title">Pipeline Architecture</h3>
             <div className="pipeline-steps">
-              <div className="step-item">
-                <span className="step-num">1</span>
-                <span className="step-name">OpenCV Webcam (720p @ ~23.4 FPS)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">2</span>
-                <span className="step-name">SCRFD Detection (det_500m.onnx)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">3</span>
-                <span className="step-name">IoU Multi-Face Tracker (&lt; 1 ms)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">4</span>
-                <span className="step-name">Quality Gate (Size, Blur, Pose)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">5</span>
-                <span className="step-name">ArcFace (New tracks only, ~8 ms)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">6</span>
-                <span className="step-name">FAISS IndexFlatIP (512-D search)</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">7</span>
-                <span className="step-name">Automatic Check-In (SQLite)</span>
-              </div>
+              {[
+                'Camera Capture Thread (full speed)',
+                'Frame Queue (drop-old, max 2)',
+                'Recognition Thread (SCRFD every 2 frames)',
+                'IoU Face Tracker (every frame)',
+                'Liveness Check (optical flow + LBP)',
+                'Quality Gate (size, blur, pose)',
+                'ArcFace Embedding (adaptive schedule)',
+                'FAISS + Margin Check (unconditional)',
+                'Temporal Voting (5-frame majority)',
+                'Attendance Check-In (confirmed only)',
+              ].map((step, i) => (
+                <div className="step-item" key={i}>
+                  <span className="step-num">{i + 1}</span>
+                  <span className="step-name">{step}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>

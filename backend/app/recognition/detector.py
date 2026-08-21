@@ -30,16 +30,12 @@ class FaceDetector:
 
     def __init__(self, model_name: Optional[str] = None):
         self.model_name = model_name or config.INSIGHTFACE_MODEL
-        model_path = (
-            Path.home()
-            / ".insightface"
-            / "models"
-            / self.model_name
-            / "det_500m.onnx"
-        )
-        if model_path.exists():
+        model_dir = Path.home() / ".insightface" / "models" / self.model_name
+        det_files = list(model_dir.glob("det_*.onnx")) if model_dir.exists() else []
+
+        if det_files:
             self.detector = model_zoo.get_model(
-                str(model_path), providers=["CPUExecutionProvider"]
+                str(det_files[0]), providers=["CPUExecutionProvider"]
             )
             self.detector.prepare(ctx_id=0, input_size=config.DETECTION_SIZE)
             self._use_zoo = True

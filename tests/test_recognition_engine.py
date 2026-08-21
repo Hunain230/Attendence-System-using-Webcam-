@@ -55,26 +55,44 @@ def mock_engine_components():
     mock_matcher = MagicMock()
     mock_quality = MagicMock()
 
-    # Default detector return: 1 face
-    face1 = DetectedFace(
-        bbox=np.array([10.0, 10.0, 130.0, 130.0], dtype=np.float32),
-        landmarks=np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 55.7], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32),
-        det_score=0.95,
-        face_crop=np.full((120, 120, 3), 128, dtype=np.uint8),
-        raw_face=object(),
-    )
-    mock_detector.detect.return_value = [face1]
+    # Default detector return: fresh copy of 1 face per call
+    def _make_face(*args, **kwargs):
+        return [
+            DetectedFace(
+                bbox=np.array([10.0, 10.0, 130.0, 130.0], dtype=np.float32),
+                landmarks=np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 67.8], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32),
+                det_score=0.95,
+                face_crop=np.full((120, 120, 3), 128, dtype=np.uint8),
+                raw_face=object(),
+            )
+        ]
+    mock_detector.detect.side_effect = _make_face
 
     # Default quality gate: passed
     mock_quality.check.return_value = QualityResult(
-        passed=True, reason="passed", score=0.9, metrics={}
+        passed=True, reason="passed", score=0.9, metrics={"yaw": 0.0, "pitch": 0.0}
     )
 
     # Default embedder: 512-D vector
     mock_embedder.embed.return_value = np.ones((512,), dtype=np.float32)
 
     # Default matcher: matches employee ID 1 with confidence 0.85
-    mock_matcher.search.return_value = [(1, 0.85)]
+    # Uses search_detailed() — returns MatchResult with accepted=True
+    from app.recognition.matcher import MatchResult
+    mock_match_result = MatchResult(
+        best_employee_id=1,
+        best_score=0.85,
+        second_employee_id=None,
+        second_score=0.0,
+        margin=0.85,  # Effectively infinite margin (no second candidate)
+        accepted=True,
+        all_employee_scores={1: 0.85},
+    )
+    mock_matcher.search_detailed.return_value = mock_match_result
+
+    # Mock liveness checker so it never marks liveness_failed
+    mock_liveness = MagicMock()
+    mock_liveness.update = lambda track: None  # No-op: never sets liveness_failed
 
     engine = RecognitionEngine(
         detector=mock_detector,
@@ -82,7 +100,11 @@ def mock_engine_components():
         matcher=mock_matcher,
         quality_gate=mock_quality,
         tracker=FaceTracker(),
+        liveness_checker=mock_liveness,
     )
+    # Force detection every frame so tracker doesn't spawn extra tracks
+    import app.config as _config
+    _config.DETECTION_INTERVAL = 1
     return engine
 
 
@@ -108,6 +130,7 @@ def test_empty_frame_returns_empty_result(mock_engine_components):
 
 def test_zero_faces_detected(mock_engine_components):
     engine = mock_engine_components
+    engine.detector.detect.side_effect = None
     engine.detector.detect.return_value = []
 
     frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
@@ -133,43 +156,76 @@ def test_arcface_skip_optimization_on_recognized_track(db_session, mock_engine_c
     assert res1.arcface_invocations == 1
     assert res1.arcface_skipped == 0
 
-    # ── Frame 2: Same track → ArcFace MUST be invoked until temporal confirmation (3 frames)
+    # ── Frames 2–5: Same track → ArcFace runs every frame during evaluating state
+    # TEMPORAL_FRAMES=5 requires 5 matching votes before confirming
     res2 = engine.process_frame(frame, db=db_session, frame_index=2)
     assert len(res2.tracks) == 1
     assert res2.arcface_invocations == 1
 
-    # ── Frame 3: Temporal confirmation reached (3 frames match) ─────────
     res3 = engine.process_frame(frame, db=db_session, frame_index=3)
-    assert res3.tracks[0].is_recognized is True
-    assert res3.tracks[0].confirmed_identity == 1
+    assert res3.arcface_invocations == 1
 
-    # ── Frame 4: Identity confirmed → ArcFace MUST BE SKIPPED! ─────────
     res4 = engine.process_frame(frame, db=db_session, frame_index=4)
-    assert len(res4.tracks) == 1
-    assert res4.arcface_invocations == 0  # ArcFace SKIPPED!
-    assert res4.arcface_skipped == 1  # Incremented skipped count!
-    assert res4.tracks[0].is_recognized is True
+    assert res4.arcface_invocations == 1
+
+    res5 = engine.process_frame(frame, db=db_session, frame_index=5)
+    assert res5.arcface_invocations == 1
+
+    # ── Frame 5+: Temporal confirmation reached (5 frames match) ─────────
+    assert res5.tracks[0].is_recognized is True
+    assert res5.tracks[0].confirmed_identity == 1
+
+    # ── Frame 6: Identity confirmed → ArcFace MUST BE SKIPPED! ─────────
+    res6 = engine.process_frame(frame, db=db_session, frame_index=6)
+    assert len(res6.tracks) == 1
+    assert res6.arcface_invocations == 0  # ArcFace SKIPPED!
+    assert res6.arcface_skipped == 1  # Incremented skipped count!
+    assert res6.tracks[0].is_recognized is True
 
 
 def test_arcface_skip_optimization_on_unknown_track(db_session, mock_engine_components):
     """Verifies unknown tracks mark_unknown() and skip ArcFace on subsequent frames."""
     engine = mock_engine_components
     # Matcher returns no match (unknown face)
-    engine.matcher.search.return_value = []
+    from app.recognition.matcher import MatchResult
+    engine.matcher.search_detailed.return_value = MatchResult(
+        best_employee_id=None,
+        best_score=0.0,
+        second_employee_id=None,
+        second_score=0.0,
+        margin=0.0,
+        accepted=False,
+        all_employee_scores={},
+    )
 
     frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
 
-    # Frame 1: New track -> ArcFace invoked -> FAISS returns [] -> mark_unknown()
+    # Frame 1: New track → ArcFace runs → unmatched (count=1)
     res1 = engine.process_frame(frame, db=db_session, frame_index=1)
     assert len(res1.tracks) == 1
-    assert res1.tracks[0].is_unknown is True
     assert res1.arcface_invocations == 1
 
-    # Frame 2: Same track -> already marked unknown -> ArcFace SKIPPED!
+    # Frames 2-3: Evaluating state → ArcFace runs each frame → 3 misses total → transitions to 'uncertain'
     res2 = engine.process_frame(frame, db=db_session, frame_index=2)
-    assert len(res2.tracks) == 1
-    assert res2.arcface_invocations == 0
-    assert res2.arcface_skipped == 1
+    assert res2.arcface_invocations == 1
+
+    res3 = engine.process_frame(frame, db=db_session, frame_index=3)
+    assert res3.tracks[0].state == "uncertain"
+
+    # Frame 4: Uncertain state → ArcFace skipped (interval is 10)
+    res4 = engine.process_frame(frame, db=db_session, frame_index=4)
+    assert res4.arcface_invocations == 0
+    assert res4.arcface_skipped == 1
+
+    # Explicit mark_unknown() puts it in 'unknown' state
+    res4.tracks[0].mark_unknown()
+    assert res4.tracks[0].is_unknown is True
+
+    # Next frame: unknown state → ArcFace skipped (interval is UNKNOWN_RETRY_INTERVAL = 30)
+    res5 = engine.process_frame(frame, db=db_session, frame_index=5)
+    assert len(res5.tracks) == 1
+    assert res5.arcface_invocations == 0
+    assert res5.arcface_skipped == 1
 
 
 # ── 3. Multi-Face Tracking & Known + Unknown Simultaneous ────
@@ -179,25 +235,29 @@ def test_multi_face_simultaneous_tracking(db_session, mock_engine_components):
     engine = mock_engine_components
     EmployeeRepository.create(db_session, employee_code="E1", name="Person 1")
 
-    # 2 faces in frame
-    f1 = DetectedFace(
-        bbox=np.array([10, 10, 130, 130], dtype=np.float32),
-        landmarks=np.zeros((5, 2)),
-        det_score=0.9,
-        face_crop=np.zeros((120, 120, 3), dtype=np.uint8),
-        raw_face=object(),
-    )
-    f2 = DetectedFace(
-        bbox=np.array([200, 200, 320, 320], dtype=np.float32),
-        landmarks=np.zeros((5, 2)),
-        det_score=0.9,
-        face_crop=np.zeros((120, 120, 3), dtype=np.uint8),
-        raw_face=object(),
-    )
-    engine.detector.detect.return_value = [f1, f2]
+    def _make_two_faces(*args, **kwargs):
+        return [
+            DetectedFace(
+                bbox=np.array([10, 10, 130, 130], dtype=np.float32),
+                landmarks=np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 67.8], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32),
+                det_score=0.9,
+                face_crop=np.zeros((120, 120, 3), dtype=np.uint8),
+                raw_face=object(),
+            ),
+            DetectedFace(
+                bbox=np.array([200, 200, 320, 320], dtype=np.float32),
+                landmarks=np.array([[40.0, 45.0], [80.0, 45.0], [60.0, 67.8], [45.0, 95.0], [75.0, 95.0]], dtype=np.float32),
+                det_score=0.9,
+                face_crop=np.zeros((120, 120, 3), dtype=np.uint8),
+                raw_face=object(),
+            ),
+        ]
+    engine.detector.detect.side_effect = _make_two_faces
 
-    # First call returns employee 1, second returns [] (unknown), third returns employee 1
-    engine.matcher.search.side_effect = [[(1, 0.88)], [], [(1, 0.88)]]
+    from app.recognition.matcher import MatchResult
+    match_emp1 = MatchResult(best_employee_id=1, best_score=0.88, second_employee_id=None, second_score=0.0, margin=0.88, accepted=True, all_employee_scores={1: 0.88})
+    no_match = MatchResult(best_employee_id=None, best_score=0.0, second_employee_id=None, second_score=0.0, margin=0.0, accepted=False, all_employee_scores={})
+    engine.matcher.search_detailed.side_effect = [match_emp1, no_match, match_emp1, no_match, match_emp1, no_match]
 
     frame = np.full((720, 1280, 3), 128, dtype=np.uint8)
 

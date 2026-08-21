@@ -34,20 +34,25 @@ def valid_face_sample():
 
     bbox = np.array([10.0, 10.0, 130.0, 130.0], dtype=np.float32)  # 120x120 size
 
-    # Symmetrical, centered 5 facial landmarks
-    # [left_eye, right_eye, nose, left_mouth, right_mouth]
+    # Symmetrical, centered 5 facial landmarks calibrated for ~0° yaw & pitch.
+    # With left_eye=[40,45], right_eye=[80,45]: eye_center=(60,45), eye_width=40.
+    # Pitch formula: atan((nose_y - eye_center_y) / eye_width - 0.57) * 2.2
+    # For pitch≈0°: need (nose_y - 45) / 40 ≈ 0.57 → nose_y ≈ 45 + 22.8 = 67.8
+    # Yaw formula: atan((nose_x - eye_center_x) / eye_width) * 2.2
+    # For yaw≈0°: nose_x = eye_center_x = 60
     landmarks = np.array(
         [
-            [40.0, 45.0],  # left eye
-            [80.0, 45.0],  # right eye
-            [60.0, 55.7],  # nose tip (eye_width=40, vertical dist=10.7 -> offset=0.2675 -> ~15° -> pitch ~0°)
-            [45.0, 95.0],  # left mouth
-            [75.0, 95.0],  # right mouth
+            [40.0, 45.0],   # left eye
+            [80.0, 45.0],   # right eye
+            [60.0, 67.8],   # nose tip → pitch ≈ 0°, yaw ≈ 0°
+            [45.0, 95.0],   # left mouth
+            [75.0, 95.0],   # right mouth
         ],
         dtype=np.float32,
     )
 
     return crop, bbox, landmarks
+
 
 
 # ── 1. Valid High-Quality Face ────────────────────────────────

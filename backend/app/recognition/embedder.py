@@ -1,7 +1,8 @@
 """
 Face Embedder — ArcFace Wrapper
 
-Extracts L2-normalized 512-D embeddings from aligned face crops using w600k_mbf.onnx (buffalo_s).
+Extracts L2-normalized 512-D embeddings from 5-point landmark aligned face crops.
+Uses w600k_r50.onnx (buffalo_l) or w600k_mbf.onnx (buffalo_s).
 """
 
 from typing import Optional
@@ -10,54 +11,75 @@ import numpy as np
 import cv2
 import insightface
 from insightface.model_zoo import model_zoo
+from insightface.utils import face_align
 
 from app import config
 
 
 class FaceEmbedder:
-    """ArcFace feature embedding extractor."""
+    """ArcFace feature embedding extractor with 5-point facial landmark alignment."""
 
     def __init__(self, model_name: Optional[str] = None):
         self.model_name = model_name or config.INSIGHTFACE_MODEL
-        model_path = (
-            Path.home()
-            / ".insightface"
-            / "models"
-            / self.model_name
-            / "w600k_mbf.onnx"
+        model_dir = Path.home() / ".insightface" / "models" / self.model_name
+        rec_files = (
+            list(model_dir.glob("w600k_*.onnx"))
+            or list(model_dir.glob("glintr*.onnx"))
+            or list(model_dir.glob("*.onnx"))
+            if model_dir.exists()
+            else []
         )
-        if model_path.exists():
+
+        if rec_files:
             self.recognizer = model_zoo.get_model(
-                str(model_path), providers=["CPUExecutionProvider"]
+                str(rec_files[0]), providers=["CPUExecutionProvider"]
             )
             self.recognizer.prepare(ctx_id=0)
             self._use_zoo = True
         else:
-            app = insightface.app.FaceAnalysis(
+            self.app = insightface.app.FaceAnalysis(
                 name=self.model_name,
-                allowed_modules=["recognition"],
+                allowed_modules=["detection", "recognition"],
                 providers=["CPUExecutionProvider"],
             )
-            app.prepare(ctx_id=0)
-            self.recognizer = app.models.get("recognition", None)
+            self.app.prepare(ctx_id=0, det_size=config.DETECTION_SIZE)
+            self.recognizer = self.app.models.get("recognition", None)
             self._use_zoo = False
 
     def embed(
-        self, frame: np.ndarray, face_obj: Optional[object] = None
+        self,
+        frame: np.ndarray,
+        face_obj: Optional[object] = None,
+        landmarks: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Extracts 512-D L2-normalized embedding vector.
+        """Extracts 512-D L2-normalized embedding vector using landmark affine alignment.
 
-        Supports passing either a cropped 112x112 image, a DetectedFace, or an InsightFace Face object.
+        Args:
+            frame: Full BGR frame or 112x112 aligned image.
+            face_obj: Optional DetectedFace or InsightFace Face object containing landmarks.
+            landmarks: Optional 5x2 facial landmarks array.
+
+        Returns:
+            512-D L2-normalized float32 numpy array.
         """
-        if isinstance(frame, np.ndarray) and frame.shape == (112, 112, 3):
-            # Direct feature extraction on 112x112 crop
-            feat = (
-                self.recognizer.get_feat(frame)
-                if self._use_zoo
-                else self.recognizer.get(frame)
-            )
-        elif not self._use_zoo and hasattr(self.recognizer, "get") and face_obj is not None:
-            feat = self.recognizer.get(frame, face_obj)
+        kps = None
+        if landmarks is not None and isinstance(landmarks, np.ndarray) and landmarks.shape == (5, 2):
+            kps = landmarks
+        elif face_obj is not None:
+            if hasattr(face_obj, "landmarks") and isinstance(face_obj.landmarks, np.ndarray) and face_obj.landmarks.shape == (5, 2):
+                kps = face_obj.landmarks
+            elif hasattr(face_obj, "kps") and isinstance(face_obj.kps, np.ndarray) and face_obj.kps.shape == (5, 2):
+                kps = face_obj.kps
+            elif hasattr(face_obj, "raw_face") and face_obj.raw_face is not None:
+                raw = face_obj.raw_face
+                if hasattr(raw, "kps") and isinstance(raw.kps, np.ndarray) and raw.kps.shape == (5, 2):
+                    kps = raw.kps
+
+        if kps is not None and frame is not None and isinstance(frame, np.ndarray) and frame.ndim == 3:
+            # High-precision 5-point landmark similarity transform alignment
+            aligned = face_align.norm_crop(frame, landmark=kps, image_size=112)
+        elif isinstance(frame, np.ndarray) and frame.shape == (112, 112, 3):
+            aligned = frame
         else:
             if (
                 face_obj is not None
@@ -65,10 +87,16 @@ class FaceEmbedder:
                 and face_obj.face_crop is not None
                 and face_obj.face_crop.size > 0
             ):
-                resized = cv2.resize(face_obj.face_crop, (112, 112))
+                aligned = cv2.resize(face_obj.face_crop, (112, 112))
+            elif frame is not None and isinstance(frame, np.ndarray) and frame.size > 0:
+                aligned = cv2.resize(frame, (112, 112))
             else:
-                resized = cv2.resize(frame, (112, 112))
-            feat = self.recognizer.get_feat(resized)
+                raise ValueError("Cannot extract embedding: invalid frame or face object")
+
+        if self._use_zoo:
+            feat = self.recognizer.get_feat(aligned)
+        else:
+            feat = self.recognizer.get(aligned)
 
         embedding = np.array(feat, dtype=np.float32).flatten()
 

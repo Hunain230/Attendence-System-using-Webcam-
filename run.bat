@@ -37,7 +37,7 @@ if not exist "%ROOT_DIR%venv\Scripts\activate.bat" (
 :: 2. Check Frontend Dependencies
 echo [2/3] Checking Frontend environment...
 if not exist "%ROOT_DIR%frontend\node_modules" (
-    echo [INFO] Installing frontend dependencies (npm install)...
+    echo [INFO] Installing frontend dependencies - npm install...
     cd /d "%ROOT_DIR%frontend"
     call npm install
     if errorlevel 1 (
@@ -61,7 +61,7 @@ start "Attendance System - Backend API" cmd /k "title Attendance System - Backen
 start "Attendance System - Frontend UI" cmd /k "title Attendance System - Frontend UI && cd /d "%ROOT_DIR%frontend" && npm run dev"
 
 :: Wait 3 seconds for initial server boot
-timeout /t 3 /nobreak >nul
+ping -n 4 127.0.0.1 >nul 2>&1
 
 :: Open browser
 start http://localhost:5173

@@ -1,18 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { enrollmentApi } from '../api/enrollment';
 import { employeesApi } from '../api/employees';
 import { StatusBadge } from '../components/StatusBadge';
 
 const TOTAL_SAMPLES_TARGET = 7;
 
-const POSE_GUIDES = {
-  straight: 'Look straight directly into the camera lens with a neutral expression.',
-  slight_left: 'Turn your head slightly to the left (~15 degrees).',
-  slight_right: 'Turn your head slightly to the right (~15 degrees).',
-  slight_up: 'Tilt your chin slightly upward (~10 degrees).',
-  slight_down: 'Tilt your chin slightly downward (~10 degrees).',
-  smile: 'Smile naturally towards the camera lens.',
-  complete: 'All required face variation samples have been successfully captured and indexed.',
+const POSE_DEFINITIONS = [
+  { id: 'straight',     name: 'Straight (Front)',   icon: '🎯', desc: 'Look directly into the camera lens with neutral expression.' },
+  { id: 'straight',     name: 'Straight (Angle 2)', icon: '🎯', desc: 'Maintain direct eye contact with the camera.' },
+  { id: 'slight_left',  name: 'Turn Left',          icon: '⬅️', desc: 'Turn head slightly to the left (~20°). Eyes level.' },
+  { id: 'slight_right', name: 'Turn Right',         icon: '➡️', desc: 'Turn head slightly to the right (~20°). Eyes level.' },
+  { id: 'slight_up',    name: 'Tilt Up',            icon: '⬆️', desc: 'Tilt your chin slightly upward (~12°). Face camera.' },
+  { id: 'slight_down',  name: 'Tilt Down',          icon: '⬇️', desc: 'Tilt your chin slightly downward (~12°). Face camera.' },
+  { id: 'smile',        name: 'Smile Naturally',    icon: '😊', desc: 'Look straight and smile naturally.' },
+];
+
+// Phase → user-facing label and style
+const PHASE_DISPLAY = {
+  guidance:   { label: 'Adjusting...',        color: '#94a3b8' },
+  holding:    { label: 'Hold still...',       color: '#f59e0b' },
+  collecting: { label: 'Capturing best frame...', color: '#6366f1' },
+  captured:   { label: '✓ Captured',          color: '#22c55e' },
+  complete:   { label: '✓ Complete',          color: '#22c55e' },
 };
 
 export function EnrollmentPage({ preselectedEmployee }) {
@@ -21,19 +30,49 @@ export function EnrollmentPage({ preselectedEmployee }) {
   const [session, setSession] = useState(null);
   const [samplesCount, setSamplesCount] = useState(0);
   const [currentPose, setCurrentPose] = useState('straight');
-  const [instructions, setInstructions] = useState(POSE_GUIDES.straight);
+  const [instructions, setInstructions] = useState(POSE_DEFINITIONS[0].desc);
   const [feedback, setFeedback] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
-  const [capturing, setCapturing] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
   const [cameraError, setCameraError] = useState(null);
-  const [autoCapture, setAutoCapture] = useState(false);
+  const [smartAutoSnap, setSmartAutoSnap] = useState(true);
+  const [flashActive, setFlashActive] = useState(false);
+
+  // Live metrics from backend
+  const [liveMetrics, setLiveMetrics] = useState({
+    yaw: 0, pitch: 0,
+    guidance: 'Position face in camera frame',
+    score: null, score_100: null,
+    phase: 'guidance',
+    hold_progress: 0, hold_required: 0,
+    collect_progress: 0, collect_required: 0,
+  });
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const autoCaptureTimerRef = useRef(null);
+  const loopTimerRef = useRef(null);
+  const isEvaluatingRef = useRef(false);
 
-  // Load employee list for selection
+  // Sound chime on snapshot capture
+  const playCaptureSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.13);
+    } catch (_) {}
+  };
+
+  // Load employee list
   useEffect(() => {
     employeesApi.list(true).then((data) => {
       setEmployees(data || []);
@@ -45,7 +84,6 @@ export function EnrollmentPage({ preselectedEmployee }) {
     });
   }, [preselectedEmployee]);
 
-  // Start client webcam for capture
   const startCamera = async () => {
     setCameraError(null);
     try {
@@ -77,7 +115,7 @@ export function EnrollmentPage({ preselectedEmployee }) {
     startCamera();
     return () => {
       stopCamera();
-      if (autoCaptureTimerRef.current) clearInterval(autoCaptureTimerRef.current);
+      if (loopTimerRef.current) clearInterval(loopTimerRef.current);
     };
   }, []);
 
@@ -85,44 +123,75 @@ export function EnrollmentPage({ preselectedEmployee }) {
     if (!selectedEmployee) return;
     setFeedback(null);
     setSamplesCount(0);
+    setLiveMetrics((m) => ({ ...m, phase: 'guidance', hold_progress: 0, collect_progress: 0 }));
+
     try {
-      const startRes = await enrollmentApi.start({
-        employee_code: selectedEmployee.employee_code,
-        name: selectedEmployee.name,
-        department: selectedEmployee.department || null,
-      });
+      const startRes = await enrollmentApi.startSession(selectedEmployee.id);
       setSession(startRes);
       setCurrentPose(startRes.current_pose || 'straight');
-      setInstructions(startRes.instructions || POSE_GUIDES.straight);
-      setFeedback({ type: 'info', message: 'Enrollment session initiated. Position face in frame.' });
-    } catch (err) {
-      // If code already exists, start session state locally for employee ID
-      setSession({
-        employee_id: selectedEmployee.id,
-        employee_code: selectedEmployee.employee_code,
-        name: selectedEmployee.name,
-        status: 'in_progress',
-        current_pose: 'straight',
-        instructions: POSE_GUIDES.straight,
-      });
-      setCurrentPose('straight');
-      setInstructions(POSE_GUIDES.straight);
+      setInstructions(startRes.instructions || POSE_DEFINITIONS[0].desc);
+      setFeedback({ type: 'info', message: 'Enrollment active. Follow the on-screen guidance.' });
+    } catch {
+      try {
+        const startRes2 = await enrollmentApi.start({
+          employee_code: selectedEmployee.employee_code,
+          name: selectedEmployee.name,
+          department: selectedEmployee.department || null,
+        });
+        setSession(startRes2);
+        setCurrentPose(startRes2.current_pose || 'straight');
+        setInstructions(startRes2.instructions || POSE_DEFINITIONS[0].desc);
+      } catch {
+        setSession({
+          employee_id: selectedEmployee.id,
+          employee_code: selectedEmployee.employee_code,
+          name: selectedEmployee.name,
+          status: 'in_progress',
+          current_pose: 'straight',
+          instructions: POSE_DEFINITIONS[0].desc,
+        });
+        setCurrentPose('straight');
+        setInstructions(POSE_DEFINITIONS[0].desc);
+      }
     }
   };
 
-  const captureAndSendSample = async () => {
+  const handleResetEnrollment = async () => {
+    if (!selectedEmployee) return;
+    setFeedback(null);
+    setSamplesCount(0);
+    setSession(null);
+    setLiveMetrics((m) => ({ ...m, phase: 'guidance', hold_progress: 0, collect_progress: 0 }));
+
+    try {
+      const res = await enrollmentApi.resetEmbeddings(selectedEmployee.id);
+      setSession(res);
+      setCurrentPose(res.current_pose || 'straight');
+      setInstructions(res.instructions || POSE_DEFINITIONS[0].desc);
+      setFeedback({ type: 'info', message: 'Embeddings cleared. Starting fresh enrollment.' });
+    } catch (err) {
+      setFeedback({ type: 'error', message: `Reset failed: ${err.message}` });
+    }
+  };
+
+  // Process a frame — does NOT claim success until backend returns captured=true
+  const evaluateOrCaptureFrame = useCallback(async (forceCapture = false) => {
     if (!videoRef.current || !canvasRef.current || !session) return;
-    setCapturing(true);
+    if (samplesCount >= TOTAL_SAMPLES_TARGET) return;
+    if (isEvaluatingRef.current) return;
 
     const video = videoRef.current;
+    if (video.readyState < 2) return;
+
+    isEvaluatingRef.current = true;
+    setEvaluating(true);
+
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Get Base64 image
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
     const base64Data = dataUrl.split(',')[1];
 
     try {
@@ -131,72 +200,88 @@ export function EnrollmentPage({ preselectedEmployee }) {
         employee_code: session.employee_code,
         name: session.name,
         image_base64: base64Data,
+        pose_name: currentPose,
+        force_capture: forceCapture,
       });
 
-      if (res.success) {
-        const nextCount = samplesCount + 1;
-        setSamplesCount(nextCount);
+      // Always update live metrics regardless of capture outcome
+      setLiveMetrics({
+        yaw: res.yaw ?? 0,
+        pitch: res.pitch ?? 0,
+        guidance: res.guidance || 'Position face',
+        score: res.score ?? null,
+        score_100: res.score_100 ?? null,
+        phase: res.phase || 'guidance',
+        hold_progress: res.hold_progress ?? 0,
+        hold_required: res.hold_required ?? 0,
+        collect_progress: res.collect_progress ?? 0,
+        collect_required: res.collect_required ?? 0,
+      });
 
-        let nextPose = 'straight';
-        if (nextCount >= 2 && nextCount < 3) nextPose = 'slight_left';
-        else if (nextCount >= 3 && nextCount < 4) nextPose = 'slight_right';
-        else if (nextCount >= 4 && nextCount < 5) nextPose = 'slight_up';
-        else if (nextCount >= 5 && nextCount < 6) nextPose = 'slight_down';
-        else if (nextCount >= 6 && nextCount < 7) nextPose = 'smile';
-        else if (nextCount >= 7) nextPose = 'complete';
+      // ── Only trigger success UI when backend confirms captured=true ──
+      if (res.captured) {
+        // Backend committed the embedding — NOW show success
+        playCaptureSound();
+        setFlashActive(true);
+        setTimeout(() => setFlashActive(false), 300);
 
-        setCurrentPose(nextPose);
-        setInstructions(POSE_GUIDES[nextPose] || 'Look at the camera.');
+        const newCount = res.samples_count || (samplesCount + 1);
+        setSamplesCount(newCount);
+
+        const nextPoseName = res.next_pose || 'complete';
+        setCurrentPose(nextPoseName);
+
+        const poseDef = POSE_DEFINITIONS[Math.min(newCount, POSE_DEFINITIONS.length - 1)];
+        setInstructions(res.next_instructions || poseDef.desc);
+
+        const qualityDisplay = res.score_100 != null
+          ? `Quality: ${res.score_100.toFixed(1)}%`
+          : res.score != null
+            ? `Quality: ${(res.score * 100).toFixed(1)}%`
+            : '';
+
         setFeedback({
           type: 'success',
-          message: `Sample accepted! Quality Score: ${(res.score * 100).toFixed(1)}% (${nextCount}/${TOTAL_SAMPLES_TARGET})`,
-        });
-
-        if (nextCount >= TOTAL_SAMPLES_TARGET) {
-          setAutoCapture(false);
-        }
-      } else {
-        const errorDetails = {
-          face_too_small: 'Face is too far. Please move closer to the camera lens.',
-          too_blurry: 'Motion blur detected. Hold still while capturing.',
-          too_dark: 'Lighting is too dark. Increase ambient lighting.',
-          excessive_yaw: 'Head is turned too far sideways. Adjust angle to ~15 degrees.',
-          excessive_pitch: 'Head is tilted too far up/down. Keep face upright.',
-          no_face_detected: 'No face detected in video frame. Ensure unobstructed view.',
-          multiple_faces_detected: 'Multiple faces detected. Only the enrolling employee must be in frame.',
-        };
-
-        setFeedback({
-          type: 'error',
-          message: errorDetails[res.reason] || `Quality check rejected: ${res.reason}`,
+          message: `📸 Captured! ${qualityDisplay} (${newCount}/${TOTAL_SAMPLES_TARGET})`,
         });
       }
+      // If not captured, the liveMetrics guidance text explains why (no extra toast)
     } catch (err) {
-      setFeedback({ type: 'error', message: err.message || 'Sample transmission failed' });
+      if (forceCapture) {
+        setFeedback({ type: 'error', message: err.message || 'Frame processing error' });
+      }
     } finally {
-      setCapturing(false);
+      isEvaluatingRef.current = false;
+      setEvaluating(false);
     }
-  };
+  }, [session, samplesCount, currentPose]);
 
-  // Auto-capture interval
+  // Real-time evaluation loop (250ms polling)
   useEffect(() => {
-    if (autoCapture && session && samplesCount < TOTAL_SAMPLES_TARGET && !capturing) {
-      autoCaptureTimerRef.current = setInterval(() => {
-        captureAndSendSample();
-      }, 1500);
+    if (smartAutoSnap && session && samplesCount < TOTAL_SAMPLES_TARGET && cameraActive) {
+      loopTimerRef.current = setInterval(() => evaluateOrCaptureFrame(false), 250);
     } else {
-      if (autoCaptureTimerRef.current) clearInterval(autoCaptureTimerRef.current);
+      if (loopTimerRef.current) clearInterval(loopTimerRef.current);
     }
-    return () => {
-      if (autoCaptureTimerRef.current) clearInterval(autoCaptureTimerRef.current);
-    };
-  }, [autoCapture, session, samplesCount, capturing]);
+    return () => { if (loopTimerRef.current) clearInterval(loopTimerRef.current); };
+  }, [smartAutoSnap, session, samplesCount, cameraActive, evaluateOrCaptureFrame]);
 
   const progressPercent = Math.min(100, Math.round((samplesCount / TOTAL_SAMPLES_TARGET) * 100));
+  const currentStepDef = POSE_DEFINITIONS[Math.min(samplesCount, TOTAL_SAMPLES_TARGET - 1)];
+  const phase = liveMetrics.phase;
+  const phaseDisplay = PHASE_DISPLAY[phase] || PHASE_DISPLAY.guidance;
+
+  // Hold/collect progress bar (during hold and collecting phases)
+  const holdPct = liveMetrics.hold_required > 0
+    ? Math.min(100, (liveMetrics.hold_progress / liveMetrics.hold_required) * 100)
+    : 0;
+  const collectPct = liveMetrics.collect_required > 0
+    ? Math.min(100, (liveMetrics.collect_progress / liveMetrics.collect_required) * 100)
+    : 0;
 
   return (
     <div className="page-container">
-      {/* Employee Selector Bar */}
+      {/* Top Header Card */}
       <div className="enrollment-header-card">
         <div className="enrollment-header-left">
           <label className="form-label" htmlFor="enroll-emp-select">Select Enrolling Employee</label>
@@ -222,25 +307,18 @@ export function EnrollmentPage({ preselectedEmployee }) {
             </select>
 
             {!session || samplesCount >= TOTAL_SAMPLES_TARGET ? (
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleStartSession}
-                disabled={!selectedEmployee}
-              >
-                {samplesCount >= TOTAL_SAMPLES_TARGET ? 'Re-enroll Employee' : 'Start Enrollment'}
+              <button type="button" className="btn btn-primary" onClick={handleStartSession} disabled={!selectedEmployee}>
+                {samplesCount >= TOTAL_SAMPLES_TARGET ? 'Re-enroll (Add Angles)' : 'Start Enrollment'}
               </button>
             ) : (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  setSession(null);
-                  setSamplesCount(0);
-                  setFeedback(null);
-                }}
-              >
+              <button type="button" className="btn btn-secondary" onClick={() => { setSession(null); setSamplesCount(0); setFeedback(null); }}>
                 Reset Session
+              </button>
+            )}
+
+            {selectedEmployee && (
+              <button type="button" className="btn btn-danger btn-sm" onClick={handleResetEnrollment} title="Delete all embeddings and start fresh">
+                🗑 Re-enroll (Clear All)
               </button>
             )}
           </div>
@@ -248,8 +326,8 @@ export function EnrollmentPage({ preselectedEmployee }) {
 
         <div className="enrollment-header-right">
           <div className="progress-meta">
-            <span className="progress-label">Enrollment Progress</span>
-            <span className="progress-count">{samplesCount} / {TOTAL_SAMPLES_TARGET} Samples</span>
+            <span className="progress-label">Multi-Angle Progress</span>
+            <span className="progress-count">{samplesCount} / {TOTAL_SAMPLES_TARGET} Angles</span>
           </div>
           <div className="progress-bar-track">
             <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }} />
@@ -257,62 +335,140 @@ export function EnrollmentPage({ preselectedEmployee }) {
         </div>
       </div>
 
-      {/* Main Guided Viewport */}
+      {/* Main Grid View */}
       <div className="enrollment-main-grid">
-        {/* Left: Webcam Capture Canvas */}
+        {/* Left: Camera + Phase Overlay */}
         <div className="enrollment-camera-card">
-          <div className="camera-frame-box">
+          <div className={`camera-frame-box ${flashActive ? 'camera-flash-active' : ''}`}>
             {cameraError ? (
               <div className="camera-error-box">
                 <p>{cameraError}</p>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={startCamera}>
-                  Retry Camera Permission
+                  Retry Camera
                 </button>
               </div>
             ) : (
               <div className="video-overlay-wrapper">
                 <video ref={videoRef} className="enrollment-video" playsInline muted autoPlay />
-                <div className="face-guide-oval" />
+
+                {/* Oval Framing Guide */}
+                <div className={`face-guide-oval ${evaluating ? 'evaluating-pulse' : ''}`} />
+
+                {/* Phase Status Banner */}
+                {session && samplesCount < TOTAL_SAMPLES_TARGET && (
+                  <div className="angle-overlay-banner" style={{ borderColor: phaseDisplay.color }}>
+                    <span className="angle-icon">{currentStepDef.icon}</span>
+                    <span className="angle-text" style={{ color: phaseDisplay.color }}>
+                      {liveMetrics.guidance || currentStepDef.name}
+                    </span>
+                  </div>
+                )}
+
+                {/* Hold progress bar (phase: holding) */}
+                {session && phase === 'holding' && liveMetrics.hold_required > 0 && (
+                  <div className="phase-progress-bar-wrap" style={{ background: '#1e293b' }}>
+                    <div className="phase-progress-label">Hold still {liveMetrics.hold_progress}/{liveMetrics.hold_required}</div>
+                    <div className="phase-progress-track">
+                      <div className="phase-progress-fill" style={{ width: `${holdPct}%`, background: '#f59e0b' }} />
+                    </div>
+                  </div>
+                )}
+
+                {/* Collect progress bar (phase: collecting) */}
+                {session && phase === 'collecting' && liveMetrics.collect_required > 0 && (
+                  <div className="phase-progress-bar-wrap" style={{ background: '#1e293b' }}>
+                    <div className="phase-progress-label">Capturing best frame {liveMetrics.collect_progress}/{liveMetrics.collect_required}</div>
+                    <div className="phase-progress-track">
+                      <div className="phase-progress-fill" style={{ width: `${collectPct}%`, background: '#6366f1' }} />
+                    </div>
+                  </div>
+                )}
+
+                {/* Shutter Flash */}
+                {flashActive && <div className="shutter-flash-overlay" />}
                 <canvas ref={canvasRef} style={{ display: 'none' }} />
               </div>
             )}
           </div>
 
+          {/* Controls Strip */}
           <div className="camera-controls-strip">
+            <div className="controls-left-group">
+              <label className="toggle-switch-label">
+                <input
+                  type="checkbox"
+                  checked={smartAutoSnap}
+                  onChange={(e) => setSmartAutoSnap(e.target.checked)}
+                  disabled={!session || samplesCount >= TOTAL_SAMPLES_TARGET}
+                />
+                <span className="toggle-text"><strong>Smart Auto-Snap</strong> (auto-captures on angle match)</span>
+              </label>
+            </div>
+
             <button
               type="button"
-              className="btn btn-primary"
-              onClick={captureAndSendSample}
-              disabled={!session || samplesCount >= TOTAL_SAMPLES_TARGET || capturing || !cameraActive}
+              className="btn btn-secondary btn-sm"
+              onClick={() => evaluateOrCaptureFrame(true)}
+              disabled={!session || samplesCount >= TOTAL_SAMPLES_TARGET || evaluating || !cameraActive}
             >
-              {capturing ? 'Evaluating Sample...' : 'Capture Sample Frame'}
+              Manual Force Snapshot
             </button>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={autoCapture}
-                onChange={(e) => setAutoCapture(e.target.checked)}
-                disabled={!session || samplesCount >= TOTAL_SAMPLES_TARGET || !cameraActive}
-              />
-              <span>Auto-capture every 1.5s</span>
-            </label>
           </div>
+
+          {/* Angle Metrics Strip */}
+          {session && (
+            <div className="angle-radar-strip">
+              <div className="radar-item">
+                <span className="radar-label">Yaw (Horizontal):</span>
+                <span className={`radar-val ${Math.abs(liveMetrics.yaw) > 10 ? 'radar-active' : ''}`}>
+                  {liveMetrics.yaw ? `${liveMetrics.yaw > 0 ? '+' : ''}${liveMetrics.yaw.toFixed(1)}°` : '0.0°'}
+                </span>
+              </div>
+              <div className="radar-item">
+                <span className="radar-label">Pitch (Vertical):</span>
+                <span className={`radar-val ${Math.abs(liveMetrics.pitch) > 10 ? 'radar-active' : ''}`}>
+                  {liveMetrics.pitch ? `${liveMetrics.pitch > 0 ? '+' : ''}${liveMetrics.pitch.toFixed(1)}°` : '0.0°'}
+                </span>
+              </div>
+              <div className="radar-item">
+                <span className="radar-label">Phase:</span>
+                <span className="radar-val radar-status" style={{ color: phaseDisplay.color }}>
+                  {phaseDisplay.label}
+                </span>
+              </div>
+              {liveMetrics.score_100 != null && (
+                <div className="radar-item">
+                  <span className="radar-label">Quality:</span>
+                  <span className="radar-val">{liveMetrics.score_100.toFixed(1)}%</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Right: Pose Guidance & Feedback */}
+        {/* Right: Guide Panel */}
         <div className="enrollment-guide-panel">
+          {/* Current Target Pose */}
           <div className="panel-section">
-            <h3 className="panel-title">Current Guided Pose</h3>
+            <h3 className="panel-title">Current Target Angle</h3>
             <div className="current-pose-card">
               <div className="pose-badge-row">
-                <span className="pose-step-badge">Step {Math.min(samplesCount + 1, TOTAL_SAMPLES_TARGET)} of {TOTAL_SAMPLES_TARGET}</span>
+                <span className="pose-step-badge">
+                  Angle {Math.min(samplesCount + 1, TOTAL_SAMPLES_TARGET)} of {TOTAL_SAMPLES_TARGET}
+                </span>
                 <StatusBadge
                   status={samplesCount >= TOTAL_SAMPLES_TARGET ? 'passed' : 'in_progress'}
-                  label={samplesCount >= TOTAL_SAMPLES_TARGET ? 'Completed' : currentPose.toUpperCase()}
+                  label={samplesCount >= TOTAL_SAMPLES_TARGET ? 'Completed' : currentStepDef.name}
                 />
               </div>
               <p className="pose-instruction-text">{instructions}</p>
+
+              {/* Phase indicator */}
+              {session && samplesCount < TOTAL_SAMPLES_TARGET && (
+                <div className="phase-indicator" style={{ color: phaseDisplay.color, fontWeight: 600, marginTop: 8 }}>
+                  {phaseDisplay.label}
+                </div>
+              )}
             </div>
           </div>
 
@@ -323,31 +479,44 @@ export function EnrollmentPage({ preselectedEmployee }) {
             </div>
           )}
 
+          {/* Angle Checklist */}
           <div className="panel-section">
-            <h3 className="panel-title">Stricter Quality Requirements</h3>
-            <div className="quality-req-list">
-              <div className="quality-req-item">
-                <span className="req-name">Minimum Face Size</span>
-                <span className="req-val">120 × 120 px</span>
-              </div>
-              <div className="quality-req-item">
-                <span className="req-name">Blur (Laplacian Var)</span>
-                <span className="req-val">&ge; 80.0</span>
-              </div>
-              <div className="quality-req-item">
-                <span className="req-name">Lighting Brightness</span>
-                <span className="req-val">&ge; 60 / 255</span>
-              </div>
-              <div className="quality-req-item">
-                <span className="req-name">Max Head Angles</span>
-                <span className="req-val">Yaw &le; 35°, Pitch &le; 35°</span>
-              </div>
-              <div className="quality-req-item">
-                <span className="req-name">FAISS Vector Index</span>
-                <span className="req-val">IndexFlatIP 512-D</span>
-              </div>
+            <h3 className="panel-title">Required Angle Sequence</h3>
+            <div className="angle-steps-list">
+              {POSE_DEFINITIONS.map((p, idx) => {
+                const isDone = samplesCount > idx;
+                const isCurrent = samplesCount === idx && session;
+                return (
+                  <div
+                    key={idx}
+                    className={`angle-step-pill ${isDone ? 'step-done' : ''} ${isCurrent ? 'step-active' : ''}`}
+                  >
+                    <span className="step-icon">{isDone ? '✓' : p.icon}</span>
+                    <span className="step-label">{p.name}</span>
+                    <span className="step-status-tag">
+                      {isDone
+                        ? 'Captured'
+                        : isCurrent
+                          ? (phase === 'holding' ? 'Holding...' : phase === 'collecting' ? 'Capturing...' : 'Active')
+                          : 'Pending'}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
+
+          {/* Completion Card */}
+          {samplesCount >= TOTAL_SAMPLES_TARGET && (
+            <div className="enrollment-completed-box">
+              <span className="completion-icon">🎉</span>
+              <h4>Enrollment Complete!</h4>
+              <p>All {TOTAL_SAMPLES_TARGET} quality-gated ArcFace embeddings have been indexed in FAISS.</p>
+              <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: 8 }}>
+                Run <code>python backend/calibrate.py</code> to verify embedding quality and recommended thresholds.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
