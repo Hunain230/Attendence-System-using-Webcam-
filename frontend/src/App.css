@@ -893,13 +893,88 @@
   object-fit: cover;
 }
 
-.face-guide-oval {
+.biometric-svg-overlay {
   position: absolute;
-  width: 200px;
-  height: 260px;
-  border: 2px dashed rgba(255, 255, 255, 0.7);
-  border-radius: 50%;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
+  z-index: 5;
+}
+
+.biometric-oval-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 2.5;
+  stroke-dasharray: 6 6;
+}
+
+.biometric-oval-glow {
+  fill: none;
+  stroke-width: 3.5;
+  transition: stroke 0.3s ease, filter 0.3s ease;
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+.biometric-bracket {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  transition: stroke 0.3s ease;
+}
+
+.biometric-guideline {
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+}
+
+.biometric-guide-text {
+  fill: rgba(255, 255, 255, 0.65);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-anchor: middle;
+  font-family: inherit;
+}
+
+.biometric-arrow-anim {
+  animation: arrowBounce 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes arrowBounce {
+  0% { transform: translateX(0); opacity: 0.7; }
+  100% { transform: translateX(12px); opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
+}
+
+@keyframes arrowBounceLeft {
+  0% { transform: translateX(0); opacity: 0.7; }
+  100% { transform: translateX(-12px); opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
+}
+
+@keyframes arrowBounceUp {
+  0% { transform: translateY(0); opacity: 0.7; }
+  100% { transform: translateY(-10px); opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
+}
+
+@keyframes arrowBounceDown {
+  0% { transform: translateY(0); opacity: 0.7; }
+  100% { transform: translateY(10px); opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
+}
+
+.anim-left { animation: arrowBounceLeft 1.4s ease-in-out infinite alternate; }
+.anim-right { animation: arrowBounce 1.4s ease-in-out infinite alternate; }
+.anim-up { animation: arrowBounceUp 1.4s ease-in-out infinite alternate; }
+.anim-down { animation: arrowBounceDown 1.4s ease-in-out infinite alternate; }
+
+.biometric-pulse-circle {
+  animation: biometricPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes biometricPulse {
+  0%, 100% { opacity: 0.8; stroke-width: 3.5px; }
+  50% { opacity: 1; stroke-width: 5px; }
 }
 
 .camera-error-box {

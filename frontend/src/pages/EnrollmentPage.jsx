@@ -351,8 +351,99 @@ export function EnrollmentPage({ preselectedEmployee }) {
               <div className="video-overlay-wrapper">
                 <video ref={videoRef} className="enrollment-video" playsInline muted autoPlay />
 
-                {/* Oval Framing Guide */}
-                <div className={`face-guide-oval ${evaluating ? 'evaluating-pulse' : ''}`} />
+                {/* ── Dynamic Biometric Face Outline Overlay ── */}
+                <svg className="biometric-svg-overlay" viewBox="0 0 400 450" preserveAspectRatio="xMidYMid meet">
+                  <defs>
+                    {/* Dark translucent vignette outside the face oval */}
+                    <mask id="faceMask">
+                      <rect width="400" height="450" fill="white" />
+                      <ellipse cx="200" cy="220" rx="100" ry="135" fill="black" />
+                    </mask>
+                    {/* Linear gradients for glow effects */}
+                    <linearGradient id="bracketGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor={phaseDisplay.color} stopOpacity="1" />
+                      <stop offset="100%" stopColor={phaseDisplay.color} stopOpacity="0.6" />
+                    </linearGradient>
+                  </defs>
+
+                  {/* Darkened vignette around face */}
+                  <rect width="400" height="450" fill="rgba(10, 15, 29, 0.42)" mask="url(#faceMask)" />
+
+                  {/* Base Dotted Oval Track */}
+                  <ellipse cx="200" cy="220" rx="100" ry="135" className="biometric-oval-track" />
+
+                  {/* Active Glowing Biometric Oval */}
+                  <ellipse
+                    cx="200"
+                    cy="220"
+                    rx="100"
+                    ry="135"
+                    className={`biometric-oval-glow ${phase === 'holding' || evaluating ? 'biometric-pulse-circle' : ''}`}
+                    stroke={phaseDisplay.color}
+                  />
+
+                  {/* Biometric Corner Brackets */}
+                  <path d="M 85 120 L 85 100 A 15 15 0 0 1 100 85 L 120 85" className="biometric-bracket" stroke={phaseDisplay.color} />
+                  <path d="M 280 85 L 300 85 A 15 15 0 0 1 315 100 L 315 120" className="biometric-bracket" stroke={phaseDisplay.color} />
+                  <path d="M 85 320 L 85 340 A 15 15 0 0 0 100 355 L 120 355" className="biometric-bracket" stroke={phaseDisplay.color} />
+                  <path d="M 280 355 L 300 355 A 15 15 0 0 0 315 340 L 315 320" className="biometric-bracket" stroke={phaseDisplay.color} />
+
+                  {/* Eye Level Alignment Guide */}
+                  <line x1="120" y1="180" x2="280" y2="180" className="biometric-guideline" />
+                  <text x="200" y="172" className="biometric-guide-text">ALIGN EYES HERE</text>
+
+                  {/* Chin Level Alignment Guide */}
+                  <line x1="160" y1="340" x2="240" y2="340" className="biometric-guideline" />
+                  <text x="200" y="365" className="biometric-guide-text">CHIN LEVEL</text>
+
+                  {/* ── Dynamic Directional Visual Cues based on currentPose ── */}
+                  {session && currentPose === 'slight_left' && (
+                    <g className="anim-left" style={{ color: '#38bdf8' }}>
+                      <circle cx="85" cy="220" r="18" fill="rgba(56, 189, 248, 0.25)" stroke="#38bdf8" strokeWidth="2" />
+                      <path d="M 92 220 L 78 220 M 84 214 L 78 220 L 84 226" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <text x="85" y="255" fill="#38bdf8" fontSize="11" fontWeight="700" textAnchor="middle">TURN LEFT</text>
+                    </g>
+                  )}
+
+                  {session && currentPose === 'slight_right' && (
+                    <g className="anim-right" style={{ color: '#38bdf8' }}>
+                      <circle cx="315" cy="220" r="18" fill="rgba(56, 189, 248, 0.25)" stroke="#38bdf8" strokeWidth="2" />
+                      <path d="M 308 220 L 322 220 M 316 214 L 322 220 L 316 226" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <text x="315" y="255" fill="#38bdf8" fontSize="11" fontWeight="700" textAnchor="middle">TURN RIGHT</text>
+                    </g>
+                  )}
+
+                  {session && currentPose === 'slight_up' && (
+                    <g className="anim-up" style={{ color: '#38bdf8' }}>
+                      <circle cx="200" cy="95" r="18" fill="rgba(56, 189, 248, 0.25)" stroke="#38bdf8" strokeWidth="2" />
+                      <path d="M 200 102 L 200 88 M 194 94 L 200 88 L 206 94" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <text x="200" y="70" fill="#38bdf8" fontSize="11" fontWeight="700" textAnchor="middle">TILT CHIN UP</text>
+                    </g>
+                  )}
+
+                  {session && currentPose === 'slight_down' && (
+                    <g className="anim-down" style={{ color: '#38bdf8' }}>
+                      <circle cx="200" cy="345" r="18" fill="rgba(56, 189, 248, 0.25)" stroke="#38bdf8" strokeWidth="2" />
+                      <path d="M 200 338 L 200 352 M 194 346 L 200 352 L 206 346" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <text x="200" y="380" fill="#38bdf8" fontSize="11" fontWeight="700" textAnchor="middle">TILT CHIN DOWN</text>
+                    </g>
+                  )}
+
+                  {session && currentPose === 'smile' && (
+                    <g style={{ color: '#f59e0b' }}>
+                      <path d="M 175 285 Q 200 310 225 285" fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
+                      <text x="200" y="272" fill="#f59e0b" fontSize="11" fontWeight="700" textAnchor="middle">SMILE NATURALLY</text>
+                    </g>
+                  )}
+
+                  {session && currentPose === 'straight' && (
+                    <g style={{ color: phaseDisplay.color }}>
+                      <circle cx="200" cy="220" r="6" fill="none" stroke={phaseDisplay.color} strokeWidth="1.5" />
+                      <line x1="200" y1="208" x2="200" y2="232" stroke={phaseDisplay.color} strokeWidth="1.5" />
+                      <line x1="188" y1="220" x2="212" y2="220" stroke={phaseDisplay.color} strokeWidth="1.5" />
+                    </g>
+                  )}
+                </svg>
 
                 {/* Phase Status Banner */}
                 {session && samplesCount < TOTAL_SAMPLES_TARGET && (
