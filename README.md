@@ -31,67 +31,87 @@
 
 - 🔍 **Real-time face detection** — SCRFD ~22 ms/frame → ~25–30 detection FPS
 - 🧠 **Face recognition** — ArcFace produces ONE 512-D embedding per face (~8 ms), FAISS searches ~5000 stored embeddings (< 1 ms)
-- 📹 **Live MJPEG stream** — annotated camera feed directly in the browser
-- 👤 **Guided enrollment** — captures multiple poses (straight, left, right, up, down, smile)
-- ✅ **Smart attendance** — auto check-in on first recognition; check-out is explicit only
-- 🔒 **Fully offline** — no cloud dependencies, all data stays on your machine
-- ⚡ **Optimized pipeline** — SCRFD detection → IoU tracking (every frame) → ArcFace only for new faces
-- 🎛️ **Fully configurable** — model, thresholds, camera, quality gates — all in one `config.py`
+- 📹 **Live MJPEG stream** — annotated camera feed directly in the browser with bounding boxes & employee name badges
+- 👤 **Guided multi-pose enrollment** — interactive capture of multiple poses (frontal, left, right, up, down, smile)
+- ✅ **Smart attendance** — auto check-in on first recognition of the day; explicit checkout support
+- 🔒 **Fully offline** — no cloud dependencies, all vector indices and databases stay on your local machine
+- ⚡ **Optimized pipeline** — SCRFD detection → IoU tracking (every frame) → ArcFace only for new/uncertain faces
+- 🎛️ **Fully configurable** — model, thresholds, camera index, quality gates — all in one `config.py`
 
 ---
 
 ## 🏗 Architecture
 
+The system operates on an offline-first, dual-pipeline architecture powered by a dedicated background recognition engine and an asynchronous REST API:
+
 ```text
-       Camera 720p / 30 FPS
-               ↓
-        ┌──────────────┐
-        │    SCRFD     │  ~22 ms / frame
-        │  Detection   │  → ~25–30 detection FPS
-        └──────┬───────┘
-               ↓
-        ┌──────────────┐
-        │ IoU Tracker  │  every frame (< 1 ms)
-        └──────┬───────┘
-               ↓
-        ┌──────┴────────┐
-        │               │
-   Known face      New face
-        │               │
-        │          Quality Gate
-        │               ↓
-        │          Align face
-        │               ↓
-        │           ArcFace        ~8 ms
-        │          (ONE embedding)
-        │               ↓
-        └───────┬───────┘
-                ↓
-          512-D embedding
-                ↓
-         ┌──────────────┐
-         │    FAISS     │  ~5000 × 512 stored embeddings
-         │  IndexFlatIP │  vector search (< 1 ms)
-         └──────┬───────┘
-                ↓
-          Nearest person
-                ↓
-        Similarity threshold
-                ↓
-        Temporal confirmation
-                ↓
-         Attendance Service
-                ↓
-             SQLite
-                ↓
-     ┌──────────┴──────────┐
-     ↓                     ↓
-  FastAPI               MJPEG
-     ↓                     ↓
-  React UI ←───────────────┘
+ ┌───────────────────────────────────────────────────────────────────────────────────┐
+ │                            LIVE RECOGNITION PIPELINE                              │
+ └───────────────────────────────────────────────────────────────────────────────────┘
+                                Webcam 720p / 30 FPS
+                                         ↓
+                               ┌───────────────────┐
+                               │       SCRFD       │  ~22 ms / frame
+                               │   Face Detection  │  → ~25–30 detection FPS
+                               └─────────┬─────────┘
+                                         ↓
+                               ┌───────────────────┐
+                               │    IoU Tracker    │  Track across frames (< 1 ms)
+                               └─────────┬─────────┘
+                                         ↓
+                               ┌─────────┴─────────┐
+                               │                   │
+                          Known Face            New Face
+                               │                   │
+                               │             Quality Gate
+                               │             (Size, Blur, Yaw, Pitch)
+                               │                   ↓
+                               │              Face Align
+                               │                   ↓
+                               │              ArcFace          ~8 ms
+                               │          (ONE embedding)
+                               │                   ↓
+                               └─────────┬─────────┘
+                                         ↓
+                                  512-D Embedding
+                                         ↓
+                               ┌───────────────────┐
+                               │   FAISS Index     │  ~5000 × 512 stored embeddings
+                               │   IndexFlatIP     │  Vector similarity (< 1 ms)
+                               └─────────┬─────────┘
+                                         ↓
+                                   Nearest Match
+                                         ↓
+                                  Cosine Distance
+                                         ↓
+                               Temporal Confirmation  (3 consecutive matches)
+                                         ↓
+                                Attendance Service     (Debounced Check-in / Checkout)
+                                         ↓
+                               ┌─────────┴─────────┐
+                               ↓                   ↓
+                         SQLite Database     MJPEG Stream Buffer
+                               ↓                   ↓
+                            FastAPI             FastAPI
+                        (/api/attendance)    (/api/stream)
+                               ↓                   ↓
+                               └─────────┬─────────┘
+                                         ↓
+                              React 19 Frontend Dashboard
+
+ ┌───────────────────────────────────────────────────────────────────────────────────┐
+ │                          GUIDED ENROLLMENT PIPELINE                               │
+ └───────────────────────────────────────────────────────────────────────────────────┘
+   React Enrollment UI  ──(Guided Poses: Frontal, Left, Right, Up, Down, Smile)──►
+          │
+          ▼
+   API: /api/enrollment/sample  ──► Quality Gate Validation ──► ArcFace Feature Extraction
+          │
+          ▼
+   FAISS Index (add_with_ids) + SQLite (employees & face_embeddings tables)
 ```
 
-> **Recognition Engine** runs as a dedicated background thread. FastAPI controls it (start/stop/status) but never runs CV inside HTTP handlers. ArcFace produces ONE embedding per face — we do NOT run ArcFace against 5000 people. FAISS handles the vector search in < 1 ms.
+> **Thread-Isolated Recognition Engine**: The OpenCV capture and AI inference pipeline runs continuously inside an isolated background daemon thread (`recognition_engine.py`). FastAPI handles client requests and controls engine state without blocking CV execution. ArcFace extracts ONE embedding per newly detected face rather than comparing against each employee, allowing FAISS to perform vector lookup in sub-millisecond time.
 
 ### ⚡ Performance Targets
 
@@ -109,73 +129,99 @@
 
 | Layer | Technology | Role |
 |:------|:-----------|:-----|
-| **Capture** | OpenCV 4.11 | Webcam capture, frame resize |
-| **Detection** | InsightFace (SCRFD) | Face bounding boxes + 5-point landmarks |
-| **Recognition** | InsightFace (ArcFace) | 512-D face embedding extraction |
-| **Inference** | ONNX Runtime | Efficient CPU inference for InsightFace models |
-| **Vector Search** | FAISS (CPU) | Cosine similarity search via `IndexFlatIP` |
-| **Database** | SQLite + SQLAlchemy 2.0 | Employees, attendance, embedding metadata |
-| **Backend** | FastAPI + Uvicorn | REST API, engine control, MJPEG stream |
-| **Frontend** | React 19 + Vite | Dashboard, enrollment, attendance management |
+| **Capture** | OpenCV 4.11 | Webcam capture, frame preprocessing, MJPEG encoding |
+| **Detection** | InsightFace (SCRFD) | Face bounding boxes + 5-point facial landmarks |
+| **Recognition** | InsightFace (ArcFace) | 512-D normalized face embedding extraction |
+| **Inference** | ONNX Runtime | CPU-optimized deep learning inference |
+| **Vector Search** | FAISS (CPU) | Sub-millisecond cosine similarity search via `IndexFlatIP` |
+| **Database** | SQLite + SQLAlchemy 2.0 | Persistent employee, attendance, and vector metadata |
+| **Backend** | FastAPI + Uvicorn | High-performance async REST API and stream server |
+| **Frontend** | React 19 + Vite | Real-time monitoring, guided enrollment & attendance portal |
 
 ---
 
 ## 📁 Project Structure
 
 <details>
-<summary><strong>Click to expand</strong></summary>
+<summary><strong>Click to expand full repository structure</strong></summary>
 
 ```text
 attendance-system/
 │
+├── run.bat                             # One-click Windows startup script
+│
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py                     # FastAPI entry point + engine lifecycle
-│   │   ├── config.py                   # All settings (model, thresholds, paths)
+│   │   ├── main.py                     # FastAPI entry point & lifespan controller
+│   │   ├── config.py                   # Central configuration & hyperparameters
 │   │   │
-│   │   ├── api/
-│   │   │   ├── employees.py            # Employee CRUD + enrollment endpoints
-│   │   │   ├── attendance.py           # Attendance queries + explicit checkout
+│   │   ├── api/                        # REST API endpoints
+│   │   │   ├── employees.py            # Employee CRUD & deactivation
+│   │   │   ├── enrollment.py           # Multi-pose guided enrollment endpoints
+│   │   │   ├── attendance.py           # Daily & historical attendance logs, checkout
 │   │   │   ├── recognition.py          # Engine start / stop / status
-│   │   │   └── stream.py              # MJPEG video stream
+│   │   │   └── stream.py              # Real-time annotated MJPEG video stream
 │   │   │
 │   │   ├── engine/
-│   │   │   └── recognition_engine.py   # Background thread: full CV pipeline
+│   │   │   └── recognition_engine.py   # Dedicated worker thread for camera & CV loop
 │   │   │
-│   │   ├── recognition/
-│   │   │   ├── detector.py             # SCRFD face detection wrapper
-│   │   │   ├── embedder.py             # ArcFace embedding extraction
-│   │   │   ├── matcher.py              # FAISS search + threshold logic
-│   │   │   ├── tracker.py              # IoU-based face tracking
-│   │   │   └── quality.py              # Face quality gate (blur, size, angle)
+│   │   ├── recognition/                # Computer Vision core modules
+│   │   │   ├── detector.py             # SCRFD face detector wrapper
+│   │   │   ├── embedder.py             # ArcFace embedding extractor
+│   │   │   ├── matcher.py              # FAISS index wrapper & cosine search
+│   │   │   ├── tracker.py              # IoU multi-face tracker
+│   │   │   ├── quality.py              # Blur, illumination, size & pose quality gates
+│   │   │   └── enrollment.py           # Multi-pose enrollment state machine
 │   │   │
-│   │   ├── database/
-│   │   │   ├── models.py               # SQLAlchemy ORM models
-│   │   │   ├── database.py             # Engine + session factory
-│   │   │   └── repository.py           # CRUD helpers
+│   │   ├── database/                   # Storage layer
+│   │   │   ├── models.py               # SQLAlchemy ORM models (Employees, Embeddings, Attendance)
+│   │   │   ├── database.py             # SQLite engine & session factory
+│   │   │   └── repository.py           # Data access objects & query helpers
+│   │   │
+│   │   ├── schemas/                    # Pydantic request/response schemas
+│   │   │   ├── employee.py             # Employee schemas
+│   │   │   ├── enrollment.py           # Enrollment schemas
+│   │   │   ├── attendance.py           # Attendance schemas
+│   │   │   └── recognition.py          # Engine status schemas
 │   │   │
 │   │   └── attendance/
-│   │       └── service.py              # Check-in / explicit checkout logic
+│   │       └── service.py              # First-seen check-in & explicit checkout business logic
 │   │
-│   ├── data/                           # Runtime data (gitignored)
-│   │   ├── attendance.db
-│   │   └── faiss.index
+│   ├── data/                           # Runtime persistent data (gitignored)
+│   │   ├── attendance.db               # SQLite database file
+│   │   └── faiss.index                 # FAISS vector index binary
 │   │
-│   └── requirements.txt
+│   └── requirements.txt                # Python backend dependencies
 │
-├── frontend/                           # React + Vite app
+├── frontend/                           # React 19 + Vite web application
 │   ├── src/
-│   ├── public/
+│   │   ├── api/
+│   │   │   └── client.js               # Backend API client
+│   │   ├── pages/
+│   │   │   ├── DashboardPage.jsx       # Overview statistics & quick actions
+│   │   │   ├── LiveRecognitionPage.jsx # Real-time camera feed & live recognition events
+│   │   │   ├── EnrollmentPage.jsx      # Interactive guided multi-pose face enrollment
+│   │   │   ├── EmployeesPage.jsx       # Employee directory & profile management
+│   │   │   └── AttendancePage.jsx      # Daily records, date filters, explicit checkout
+│   │   ├── components/                 # Reusable UI components
+│   │   ├── App.jsx                     # Root application layout & routing
+│   │   ├── App.css                     # Component & layout styling
+│   │   ├── index.css                   # Global styles & theme definitions
+│   │   └── main.jsx                    # React DOM entry point
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
 │
-├── tests/
-│   ├── test_camera.py
-│   ├── test_detection.py
-│   ├── test_recognition.py
-│   └── test_attendance.py
+├── tests/                              # Pytest test suite
+│   ├── conftest.py
+│   ├── test_api.py                     # FastAPI endpoint tests
+│   ├── test_attendance_service.py      # Attendance logic & debouncing tests
+│   ├── test_database.py                # Database CRUD tests
+│   ├── test_enrollment.py              # Enrollment pipeline tests
+│   ├── test_matcher.py                 # FAISS similarity & threshold tests
+│   ├── test_quality.py                 # Quality gate & pose angle tests
+│   └── test_recognition_engine.py      # Background engine lifecycle tests
 │
 ├── .gitignore
 └── README.md
@@ -191,20 +237,41 @@ attendance-system/
 
 | Requirement | Version |
 |:------------|:--------|
-| Python | 3.10 or 3.11 |
+| Python | 3.10, 3.11, or 3.12 |
 | Node.js | 18+ |
 | npm | 9+ |
-| Webcam | Any USB or built-in |
+| Webcam | Any USB or built-in webcam |
 | OS | Windows 10/11 |
 
-### 1. Clone the repository
+---
+
+### ⚡ Option A: One-Click Launch (Windows)
+
+Simply double-click [`run.bat`](run.bat) (or run in Command Prompt):
+
+```cmd
+run.bat
+```
+
+This automated launcher will:
+1. Verify the Python virtual environment and install missing dependencies if needed.
+2. Check frontend packages (`npm install` if needed).
+3. Start the FastAPI backend server on `http://127.0.0.1:8000`.
+4. Start the Vite React frontend server on `http://localhost:5173`.
+5. Automatically open the web app in your default browser.
+
+---
+
+### 🛠 Option B: Manual Setup
+
+#### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Hunain230/Attendence-System-using-Webcam-.git
 cd Attendence-System-using-Webcam-
 ```
 
-### 2. Set up the backend
+#### 2. Set up the backend
 
 ```bash
 # Create and activate virtual environment
@@ -220,7 +287,7 @@ pip install -r backend/requirements.txt
 > [!NOTE]
 > InsightFace will automatically download the `buffalo_s` model pack (~100 MB) on first run.
 
-### 3. Set up the frontend
+#### 3. Set up the frontend
 
 ```bash
 cd frontend
@@ -228,12 +295,12 @@ npm install
 cd ..
 ```
 
-### 4. Run the system
+#### 4. Run the system
 
 ```bash
 # Terminal 1 — Backend
 .\venv\Scripts\Activate.ps1
-uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 
 # Terminal 2 — Frontend
 cd frontend
@@ -286,33 +353,39 @@ $env:CAMERA_INDEX = "1"
 
 | Method | Endpoint | Description |
 |:-------|:---------|:------------|
-| `POST` | `/api/employees` | Create a new employee |
-| `GET` | `/api/employees` | List all employees |
+| `POST` | `/api/employees` | Create a new employee record |
+| `GET` | `/api/employees` | List all employees (`?active_only=true`) |
 | `GET` | `/api/employees/{id}` | Get employee details |
-| `DELETE` | `/api/employees/{id}` | Deactivate employee (soft delete) |
-| `POST` | `/api/employees/{id}/enroll` | Start guided face enrollment |
+| `DELETE` | `/api/employees/{id}` | Deactivate employee and remove face embeddings |
+
+### Guided Face Enrollment
+
+| Method | Endpoint | Description |
+|:-------|:---------|:------------|
+| `POST` | `/api/enrollment/start` | Create employee and initialize multi-pose session |
+| `POST` | `/api/enrollment/sample` | Process base64 frame for current required pose |
 
 ### Recognition Engine
 
 | Method | Endpoint | Description |
 |:-------|:---------|:------------|
-| `POST` | `/api/recognition/start` | Start recognition engine |
+| `POST` | `/api/recognition/start` | Start camera capture & background recognition engine |
 | `POST` | `/api/recognition/stop` | Stop recognition engine |
-| `GET` | `/api/recognition/status` | Engine state + live stats |
+| `GET` | `/api/recognition/status` | Current engine state & live processing statistics |
 
 ### Attendance
 
 | Method | Endpoint | Description |
 |:-------|:---------|:------------|
-| `GET` | `/api/attendance` | All records (filter: `?date=YYYY-MM-DD`) |
-| `GET` | `/api/attendance/today` | Today's attendance |
-| `POST` | `/api/attendance/{id}/checkout` | Explicit checkout |
+| `GET` | `/api/attendance` | Attendance records (filter: `?date=YYYY-MM-DD`) |
+| `GET` | `/api/attendance/today` | Today's attendance list |
+| `POST` | `/api/attendance/{id}/checkout` | Mark explicit checkout timestamp |
 
-### Stream
+### Video Stream
 
 | Method | Endpoint | Description |
 |:-------|:---------|:------------|
-| `GET` | `/api/stream` | MJPEG live video stream |
+| `GET` | `/api/stream` | MJPEG live annotated video stream with bounding boxes |
 
 ---
 
@@ -376,7 +449,7 @@ $env:CAMERA_INDEX = "1"
 | 8 | Recognition engine + IoU tracker + skip rule optimization | ✅ |
 | 9 | Attendance service (first check-in + explicit checkout + debounced cache) | ✅ |
 | 10 | FastAPI REST API (CRUD routers + Pydantic + MJPEG stream) | ✅ |
-| 11 | React dashboard | ⬜ |
+| 11 | React dashboard | ✅ |
 
 ---
 
