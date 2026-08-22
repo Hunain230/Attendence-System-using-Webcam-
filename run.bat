@@ -77,5 +77,5 @@ echo   * MJPEG Stream:    http://127.0.0.1:8000/api/stream
 echo.
 echo   Keep the backend and frontend terminal windows open.
 echo   Close those windows or press any key here to exit launcher.
-echo ============================================================
+echo =========================================================
 pause
