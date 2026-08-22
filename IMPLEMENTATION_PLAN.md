@@ -1793,7 +1793,7 @@ buffalo_s on i5-11300H:
 
 | Enhancement | Purpose |
 |:------------|:--------|
-| Mobile enrollment | Use S23 Ultra for high-quality enrollment photos |
+| Mobile enrollment | Use S23 Ultra for high-quality photos |
 | Cloud deployment | Supabase / PostgreSQL cloud backend |
 | Multi-office | Federated attendance across locations |
 | Analytics dashboard | Trends, late arrivals, patterns |
